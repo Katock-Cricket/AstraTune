@@ -1,0 +1,5 @@
+uv
+langgraph
+langchain
+langchain-openai
+pymysql
