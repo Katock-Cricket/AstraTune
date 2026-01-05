@@ -16,33 +16,47 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        "--config",
-        type=str,
-        default="configs",
-        help="配置文件目录路径（默认: configs）"
-    )
-    
-    parser.add_argument(
         "--sql",
         type=str,
         required=True,
-        help="需要诊断的慢SQL语句"
+        help="需要诊断的慢SQL语句, 多条sql用分号分隔"
     )
     
     parser.add_argument(
         "--tables",
         type=str,
-        required=True,
-        help="相关数据库表名，多个表用逗号分隔"
+        default=None,
+        help="相关数据库表名，多个表用逗号分隔，如不填，则不涉及已有的表"
     )
     
     parser.add_argument(
         "--log",
         type=str,
-        default="",
+        default=None,
         help="执行日志（包含平均执行时间、执行次数等统计信息）"
     )
-    
+
+    parser.add_argument(
+        "--preprocess-sql",
+        type=str,
+        default=None,
+        help="测试本条sql的前置sql，多条sql用分号分隔"
+    )
+
+    parser.add_argument(
+        "--clean-up-sql",
+        type=str,
+        default=None,
+        help="测试本条sql的清理sql，用于恢复测试环境，多条sql用分号分隔"
+    )
+
+    parser.add_argument(
+        "--user-prompt",
+        type=str,
+        default=None,
+        help="附加用户提示"
+    )
+
     parser.add_argument(
         "--log-file",
         type=str,
@@ -65,13 +79,16 @@ def main():
     logger.info("=" * 80)
     
     # 解析表名列表
-    tables = [t.strip() for t in args.tables.split(",") if t.strip()]
-    logger.info(f"涉及的表: {tables}")
+    if args.tables:
+        tables = [t.strip() for t in args.tables.split(",") if t.strip()]
+        logger.info(f"涉及的表: {tables}")
+    else:
+        tables = []
     
     try:
         # 1. 加载配置
         logger.info("步骤 1/7: 加载配置文件")
-        configs = load_all_configs(args.config)
+        configs = load_all_configs()
         diag_config = get_diagnosis_config(configs)
         
         agent_config = diag_config.get("agent", {})
@@ -159,6 +176,12 @@ def main():
         logger.info("步骤 5/7: 初始化Agent")
         # Agent只使用沙箱数据库executor
         sandbox_tool = SandboxTool(sandbox_executor, sandbox_manager.table_mapper)
+        # 注册前置和清理sql
+        if args.preprocess_sql:
+            sandbox_tool.register_preprocess_sql(args.preprocess_sql)
+        if args.clean_up_sql:
+            sandbox_tool.register_clean_up_sql(args.clean_up_sql)
+
         rag_tool = RAGTool() if agent_config.get("enable_rag", False) else None
         
         try:
@@ -181,7 +204,10 @@ def main():
                 schema=schema,
                 tables=tables,
                 exec_log=args.log,
-                sampled_tables=sandbox_info["sampled_tables"]
+                sampled_tables=sandbox_info["sampled_tables"],
+                preprocess_sql=args.preprocess_sql,
+                clean_up_sql=args.clean_up_sql,
+                user_prompt=args.user_prompt
             )
             
             # 输出诊断结果
@@ -196,6 +222,7 @@ def main():
             
         except Exception as e:
             logger.error(f"诊断执行失败: {e}")
+            raise
         
         # 7. 清理沙箱和关闭连接
         logger.info("步骤 7/7: 清理沙箱环境")

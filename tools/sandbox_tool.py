@@ -16,7 +16,25 @@ class SandboxTool:
         """
         self.executor = executor
         self.table_mapper = table_mapper
-    
+
+    def register_preprocess_sql(self, preprocess_sql: str) -> None:
+        """
+        注册前置sql
+        
+        Args:
+            preprocess_sql: 前置sql
+        """
+        self.preprocess_sql = preprocess_sql
+
+    def register_clean_up_sql(self, clean_up_sql: str) -> None:
+        """
+        注册清理sql
+        
+        Args:
+            clean_up_sql: 清理sql
+        """
+        self.clean_up_sql = clean_up_sql
+
     def  execute_sql(self, sql: str) -> str:
         """
         执行SQL语句（Agent调用的主要接口）
@@ -35,8 +53,18 @@ class SandboxTool:
             # 进行表名替换
             replaced_sql = self.table_mapper.replace_table_names(sql)
             
+            # 执行前置sql
+            if self.preprocess_sql:
+                result_pre = self.executor.execute(self.preprocess_sql, fetch=True)
+                default_logger.info(f"前置sql执行成功: {result_pre[:100]}...")
+
             # 执行SQL
             results = self.executor.execute(replaced_sql, fetch=True)
+
+            # 执行清理sql
+            if self.clean_up_sql:
+                result_clean_up = self.executor.execute(self.clean_up_sql, fetch=True)
+                default_logger.info(f"清理sql执行成功: {result_clean_up[:100]}...")
             
             # 格式化结果返回给Agent
             formatted_result = self._format_results(results)

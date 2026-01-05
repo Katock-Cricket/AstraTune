@@ -123,8 +123,8 @@ class SandboxManager:
                     self.sandbox_executor.execute(insert_sql, fetch=False)
                     inserted_count += len(batch)
                     
-                    if total_rows > self.batch_size:
-                        default_logger.info(f"已插入 {inserted_count}/{total_rows} 行")
+                    # if total_rows > self.batch_size:
+                    #     default_logger.info(f"已插入 {inserted_count}/{total_rows} 行")
                 
                 default_logger.info(f"成功插入 {inserted_count} 行数据到沙箱表")
                 return inserted_count

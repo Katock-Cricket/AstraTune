@@ -64,8 +64,11 @@ class DiagnosisAgent:
         ori_sql: str,
         schema: str,
         tables: List[str],
-        exec_log: str = "",
-        sampled_tables: List[str] = []
+        exec_log: str = None,
+        sampled_tables: List[str] = None,
+        preprocess_sql: str = None,
+        clean_up_sql: str = None,
+        user_prompt: str = None
     ) -> str:
         """
         执行慢SQL诊断
@@ -76,7 +79,10 @@ class DiagnosisAgent:
             tables: 相关表名列表
             exec_log: 执行日志（包含平均执行时间、执行次数等）
             sampled_tables: 采样表列表（可选）
-        
+            preprocess_sql: 测试本条sql的前置sql
+            clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
+            user_prompt: 用户提示
+
         Returns:
             诊断报告（自然语言）
         """
@@ -84,22 +90,35 @@ class DiagnosisAgent:
         default_logger.info(f"SQL: {ori_sql[:100]}...")
         default_logger.info(f"涉及表: {tables}")
         default_logger.info(f"采样表: {sampled_tables}")
-        default_logger.info(f"执行日志: {exec_log[:100]}...")
+        if exec_log:
+            default_logger.info(f"执行日志: {exec_log[:100]}...")
+        if preprocess_sql:
+            default_logger.info(f"前置sql: {preprocess_sql[:100]}...")
+        if clean_up_sql:
+            default_logger.info(f"清理sql: {clean_up_sql[:100]}...")
+        if user_prompt:
+            default_logger.info(f"用户提示: {user_prompt[:100]}...")
                 
         try:
+            # 创建系统提示
+            system_prompt = create_system_prompt(enable_test=self.enable_test, enable_rag=self.enable_rag)
+            
             # 创建初始消息
             initial_message = create_initial_message(
                 sql=ori_sql,
                 schema=schema,
                 tables=tables,
                 exec_log=exec_log,
-                sampled_tables=sampled_tables
+                sampled_tables=sampled_tables,
+                preprocess_sql=preprocess_sql,
+                clean_up_sql=clean_up_sql,
+                user_prompt=user_prompt
             )
             
             # 构建初始状态
             initial_state = {
                 "messages": [
-                    SystemMessage(content=create_system_prompt()),
+                    SystemMessage(content=system_prompt),
                     HumanMessage(content=initial_message)
                 ],
                 "iteration": 0,

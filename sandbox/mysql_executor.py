@@ -96,14 +96,13 @@ class MySQLExecutor(DBExecutor):
                         default_logger.debug(f"语句执行时间: {execution_time:.4f}秒 ({execution_time * 1000:.2f}ms)")
                 
                 self.connection.commit()
-                default_logger.info(f"成功执行{len(statements)}条SQL语句")
+                # default_logger.info(f"成功执行{len(statements)}条SQL语句")
                 
                 return all_results if fetch else None
                 
         except Exception as e:
             self.connection.rollback()
             default_logger.error(f"执行SQL失败: {e}")
-            raise
     
     def close(self) -> None:
         """关闭数据库连接"""
