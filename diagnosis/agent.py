@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
 from diagnosis.graph import create_diagnosis_graph
-from diagnosis.prompts import SYSTEM_PROMPT, create_initial_message
+from diagnosis.prompts import create_system_prompt, create_initial_message
 from tools.sandbox_tool import SandboxTool, create_sandbox_tool_function
 from tools.rag_tool import RAGTool, create_rag_tool_function
 from utils.logger import default_logger
@@ -99,7 +99,7 @@ class DiagnosisAgent:
             # 构建初始状态
             initial_state = {
                 "messages": [
-                    SystemMessage(content=SYSTEM_PROMPT),
+                    SystemMessage(content=create_system_prompt()),
                     HumanMessage(content=initial_message)
                 ],
                 "iteration": 0,

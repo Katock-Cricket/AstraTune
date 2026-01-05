@@ -1,4 +1,4 @@
-def create_system_prompt(enable_test: bool, enable_rag: bool) -> str:
+def create_system_prompt(enable_test: bool = False, enable_rag: bool = False) -> str:
 
     """
     创建系统提示词
@@ -26,6 +26,9 @@ def create_system_prompt(enable_test: bool, enable_rag: bool) -> str:
     if enable_rag:
         tools_desc.append(rag_tool_desc)
 
+    # 构建工具描述字符串（避免在f-string中使用反斜杠）
+    tools_list = "\n".join([f"{i+1}. {desc}" for i, desc in enumerate(tools_desc)])
+
     return f"""你是一个专业的数据库性能诊断专家，专门负责分析和优化慢SQL查询。
 
 ## 你的任务
@@ -33,7 +36,7 @@ def create_system_prompt(enable_test: bool, enable_rag: bool) -> str:
 
 ## 可用工具
 你可以使用以下工具来辅助诊断：
-{"\n".join([f"{i+1}. {desc}" for i, desc in enumerate(tools_desc)])}
+{tools_list}
 
 ## 重要说明
 - 你将在**沙箱环境**中工作，所有操作都是安全的，不会影响生产数据库

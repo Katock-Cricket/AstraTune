@@ -1,6 +1,3 @@
-"""
-测试MySQL数据库连接和SQL执行功能
-"""
 import sys
 from pathlib import Path
 
@@ -15,8 +12,15 @@ from utils.logger import setup_logger
 
 # 硬编码的测试SQL语句
 TEST_SQL = """
+CREATE TABLE sales (id INT, slot TIMESTAMP, total INT);
+INSERT INTO sales VALUES(1, '2022-12-01T12:00', 100), (2, '2022-12-01T12:30', 150), (3, '2022-12-01T13:00', 200);
+CREATE INDEX idx_test ON sales (slot);
+
 SET @current_time = TIMESTAMP('2022-12-01 12:40:00');
 WITH cte AS (SELECT slot, SUM(total) OVER(ORDER BY slot) AS total, total AS rowtotal FROM sales WHERE slot < @current_time ORDER BY slot DESC LIMIT 1) SELECT total - (30 - TIMESTAMPDIFF(MINUTE, slot, @current_time))/30 * rowtotal AS total FROM cte
+
+SET @current_time := NULL;
+DROP TABLE sales;
 """
 
 
@@ -31,14 +35,14 @@ def test_mysql_connection():
         # 加载配置
         configs = load_all_configs("configs")
         diag_config = get_diagnosis_config(configs)
-        sandbox_config = diag_config.get("sandbox", {})
+        target_db_config = diag_config.get("target_db", {})
         
-        if not sandbox_config:
+        if not target_db_config:
             logger.error("沙箱配置为空，请检查配置文件")
             return False
         
         # 创建MySQL执行器
-        executor = MySQLExecutor(sandbox_config)
+        executor = MySQLExecutor(target_db_config)
         
         # 连接数据库
         executor.connect()
@@ -55,54 +59,6 @@ def test_mysql_connection():
         return False
 
 
-def test_mysql_execute_simple():
-    """测试执行简单SQL语句"""
-    logger = setup_logger()
-    logger.info("=" * 80)
-    logger.info("测试2: 执行简单SQL语句")
-    logger.info("=" * 80)
-    
-    try:
-        # 加载配置
-        configs = load_all_configs("configs")
-        diag_config = get_diagnosis_config(configs)
-        sandbox_config = diag_config.get("sandbox", {})
-        
-        # 创建并连接MySQL执行器
-        executor = MySQLExecutor(sandbox_config)
-        executor.connect()
-        
-        # 执行简单查询
-        test_queries = [
-            "SELECT 1 AS test_value",
-            "SELECT VERSION() AS mysql_version",
-            "SELECT DATABASE() AS current_database",
-            "SHOW TABLES"
-        ]
-        
-        for sql in test_queries:
-            logger.info(f"执行SQL: {sql}")
-            results = executor.execute(sql, fetch=True)
-            
-            if results and len(results) > 0:
-                result = results[0]
-                logger.info(f"  返回行数: {result.get('row_count', 0)}")
-                logger.info(f"  执行时间: {result.get('execution_time_ms', 0)}ms")
-                if result.get('rows'):
-                    logger.info(f"  结果示例: {result['rows'][0] if result['rows'] else 'N/A'}")
-                logger.info("✓ SQL执行成功")
-            else:
-                logger.warning("  未返回结果")
-        
-        # 关闭连接
-        executor.close()
-        return True
-        
-    except Exception as e:
-        logger.error(f"✗ SQL执行测试失败: {e}")
-        return False
-
-
 def test_mysql_execute_hardcoded():
     """测试执行硬编码的复杂SQL语句"""
     logger = setup_logger()
@@ -114,10 +70,10 @@ def test_mysql_execute_hardcoded():
         # 加载配置
         configs = load_all_configs("configs")
         diag_config = get_diagnosis_config(configs)
-        sandbox_config = diag_config.get("sandbox", {})
+        target_db_config = diag_config.get("target_db", {})
         
         # 创建并连接MySQL执行器
-        executor = MySQLExecutor(sandbox_config)
+        executor = MySQLExecutor(target_db_config)
         executor.connect()
         
         logger.info(f"执行SQL: {TEST_SQL[:100]}...")

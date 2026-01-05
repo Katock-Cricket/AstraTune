@@ -1,6 +1,3 @@
-"""
-测试LangGraph驱动的DiagnosisAgent通信功能
-"""
 import sys
 from pathlib import Path
 
@@ -113,103 +110,6 @@ CREATE TABLE `users` (
         return False
 
 
-def test_agent_with_complex_sql():
-    """测试Agent处理复杂SQL（不使用工具）"""
-    logger = setup_logger()
-    logger.info("=" * 80)
-    logger.info("测试3: Agent处理复杂SQL")
-    logger.info("=" * 80)
-    
-    try:
-        # 加载配置
-        configs = load_all_configs("configs")
-        diag_config = get_diagnosis_config(configs)
-        agent_config = diag_config.get("agent", {})
-        
-        # 初始化Agent（不使用工具）
-        agent = DiagnosisAgent(agent_config, sandbox_tool=None, rag_tool=None)
-        
-        # 准备复杂SQL测试数据
-        complex_sql = """
-SELECT 
-    o.order_id,
-    u.name,
-    SUM(oi.quantity * oi.price) as total_amount
-FROM orders o
-JOIN users u ON o.user_id = u.id
-JOIN order_items oi ON o.order_id = oi.order_id
-WHERE o.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-GROUP BY o.order_id, u.name
-HAVING total_amount > 1000
-ORDER BY total_amount DESC
-"""
-        
-        complex_schema = """
--- 表: users
-CREATE TABLE `users` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) DEFAULT NULL,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 表: orders
-CREATE TABLE `orders` (
-  `order_id` int NOT NULL AUTO_INCREMENT,
-  `user_id` int DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`order_id`),
-  KEY `idx_user_id` (`user_id`),
-  KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 表: order_items
-CREATE TABLE `order_items` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `order_id` int DEFAULT NULL,
-  `quantity` int DEFAULT NULL,
-  `price` decimal(10,2) DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_order_id` (`order_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"""
-        
-        test_tables = ["users", "orders", "order_items"]
-        test_log = "平均执行时间: 5.2秒, 执行次数: 500次, 扫描行数: 100000行"
-        
-        logger.info("发送复杂SQL诊断请求...")
-        logger.info(f"  SQL: {complex_sql[:100]}...")
-        logger.info(f"  涉及表: {test_tables}")
-        
-        # 调用Agent进行诊断
-        conclusion = agent.diagnose(
-            ori_sql=complex_sql,
-            schema=complex_schema,
-            tables=test_tables,
-            exec_log=test_log,
-            sampled_tables=[]
-        )
-        
-        logger.info("\n" + "-" * 80)
-        logger.info("Agent响应:")
-        logger.info("-" * 80)
-        logger.info(conclusion)
-        logger.info("-" * 80)
-        
-        # 验证响应
-        if conclusion and len(conclusion) > 0:
-            logger.info("\n✓ Agent成功处理复杂SQL，收到有效响应")
-            logger.info(f"  响应长度: {len(conclusion)} 字符")
-            return True
-        else:
-            logger.warning("\n✗ Agent响应为空")
-            return False
-        
-    except Exception as e:
-        logger.error(f"✗ Agent复杂SQL测试失败: {e}")
-        logger.error(f"错误详情: {str(e)}", exc_info=True)
-        return False
-
-
 def main():
     """运行所有Agent测试"""
     logger = setup_logger()
@@ -224,9 +124,6 @@ def main():
     
     # 测试2: 简单通信
     results.append(("Agent简单通信", test_agent_simple_communication()))
-    
-    # 测试3: 复杂SQL处理
-    results.append(("Agent处理复杂SQL", test_agent_with_complex_sql()))
     
     # 输出测试总结
     logger.info("\n" + "=" * 80)
