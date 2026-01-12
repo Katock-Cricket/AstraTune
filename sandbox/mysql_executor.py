@@ -102,7 +102,7 @@ class MySQLExecutor(DBExecutor):
                 
         except Exception as e:
             self.connection.rollback()
-            default_logger.error(f"执行SQL失败: {e}")
+            # default_logger.error(f"执行SQL失败: {e}")
     
     def close(self) -> None:
         """关闭数据库连接"""

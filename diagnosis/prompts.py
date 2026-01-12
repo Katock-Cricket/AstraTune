@@ -64,7 +64,7 @@ def create_system_prompt(enable_test: bool = False, enable_rag: bool = False) ->
 {tools_usage_desc}
 
 ## 输出格式
-当你认为诊断已完成，请严格使用以下格式输出最终结论：
+当你认为诊断已完成，请严格使用以下格式输出最终结论，将诊断结论以“【诊断结论】”开头：
 
 ```
 【诊断结论】
@@ -80,6 +80,7 @@ def create_system_prompt(enable_test: bool = False, enable_rag: bool = False) ->
 
 ## 注意事项
 - 保持专业和严谨，基于数据和证据进行分析
+- **请全程使用中文推理或输出结论！**
 - (如果系统提供了工具)可以使用工具获取更多信息
 - (如果系统提供了工具)考虑多种可能的优化方案，选择最优的
 """

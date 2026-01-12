@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 import operator
 from utils.logger import default_logger
@@ -42,27 +43,29 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
     llm_with_tools = llm.bind_tools(tools)
     
     # 定义节点函数
-    def reasoning_node(state: AgentState) -> AgentState:
-        """推理节点：调用LLM进行推理"""
-        default_logger.info(f"推理节点 - 迭代 {state['iteration']}/{state['max_iter']}")
+    async def reasoning_node(state: AgentState, config: RunnableConfig) -> AgentState:
+        """推理节点：调用LLM进行推理
+        
+        Args:
+            state: Agent状态
+            config: 运行时配置（包含回调），由 LangGraph 自动传递
+        """
         
         messages = state["messages"]
         iteration = state["iteration"]
         
-        # 调用LLM
-        response = llm_with_tools.invoke(messages)
+        full_response = await llm_with_tools.ainvoke(messages, config=config)
         
         # 检查是否输出了结论
         conclusion = ""
-        if isinstance(response.content, str):
-            content = response.content
-            idx = content.find("【诊断结论】")
+        if full_response and isinstance(full_response.content, str):
+            content = full_response.content
+            idx = content.rfind("【诊断结论】")
             if idx != -1:
                 conclusion = content[idx:]
-                default_logger.info("检测到诊断结论输出")
         
         return {
-            "messages": [response],
+            "messages": [full_response],
             "iteration": iteration + 1,
             "conclusion": conclusion
         }
@@ -75,28 +78,24 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
         max_iter = state["max_iter"]
         conclusion = state["conclusion"]
         
-        # 如果已经输出结论，结束
         if conclusion:
-            default_logger.info("已输出诊断结论，结束迭代")
             return "end"
         
-        # 如果达到最大迭代次数，强制结束
         if iteration >= max_iter:
-            default_logger.warning(f"达到最大迭代次数 {max_iter}，强制结束")
             return "force_end"
         
-        # 如果LLM调用了工具，执行工具
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            default_logger.info(f"检测到工具调用: {len(last_message.tool_calls)} 个")
-            return "continue"
+            return "tool"
         
-        # 如果没有工具调用也没有结论，继续推理
-        default_logger.info("继续推理")
-        return "continue"
+        raise RuntimeError(f"LLM 未能成功调用工具，可能是型号问题。请检查日志: {last_message}")
     
-    def force_conclusion_node(state: AgentState) -> AgentState:
-        """强制输出结论节点：当达到最大迭代次数时调用"""
-        default_logger.info("强制输出结论节点")
+    async def force_conclusion_node(state: AgentState, config: RunnableConfig) -> AgentState:
+        """强制输出结论节点：当达到最大迭代次数时调用
+        
+        Args:
+            state: Agent状态
+            config: 运行时配置（包含回调），由 LangGraph 自动传递
+        """
         
         messages = state["messages"]
         
@@ -106,9 +105,12 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
         )
         
         # 调用LLM生成结论
-        response = llm.invoke(messages + [force_message])
+        response = await llm.ainvoke(messages + [force_message], config=config)
         
-        conclusion = response.content if isinstance(response.content, str) else ""
+        conclusion = response.content if response and isinstance(response.content, str) else ""
+        idx = conclusion.rfind("【诊断结论】")
+        if idx != -1:
+            conclusion = conclusion[idx:]
         
         return {
             "messages": [force_message, response],
@@ -134,9 +136,10 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
         "reasoning",
         should_continue,
         {
-            "continue": "tools",
+            "tool": "tools",
             "end": END,
-            "force_end": "force_conclusion"
+            "force_end": "force_conclusion",
+            "continue": "reasoning"
         }
     )
     
@@ -147,7 +150,7 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
     workflow.add_edge("force_conclusion", END)
     
     app = workflow.compile()
-    default_logger.info("LangGraph状态图创建完成")
+    # default_logger.info("LangGraph状态图创建完成")
     
     return app
 

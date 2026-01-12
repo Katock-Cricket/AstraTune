@@ -3,3 +3,4 @@ langgraph
 langchain
 langchain-openai
 pymysql
+rich>=13.0.0

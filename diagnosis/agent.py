@@ -1,4 +1,5 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+import asyncio
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
 from diagnosis.graph import create_diagnosis_graph
@@ -6,6 +7,7 @@ from diagnosis.prompts import create_system_prompt, create_initial_message
 from tools.sandbox_tool import SandboxTool, create_sandbox_tool_function
 from tools.rag_tool import RAGTool, create_rag_tool_function
 from utils.logger import default_logger
+from utils.stream_handler import StreamHandler
 
 
 class DiagnosisAgent:
@@ -59,7 +61,7 @@ class DiagnosisAgent:
         
         return tools
     
-    def diagnose(
+    async def diagnose_stream(
         self,
         ori_sql: str,
         schema: str,
@@ -68,10 +70,15 @@ class DiagnosisAgent:
         sampled_tables: List[str] = None,
         preprocess_sql: str = None,
         clean_up_sql: str = None,
-        user_prompt: str = None
+        user_prompt: str = None,
+        stream_handler: Optional[StreamHandler] = None
     ) -> str:
         """
-        执行慢SQL诊断
+        流式执行慢SQL诊断（异步）
+        
+        使用 astream_events(version="v2") 捕获完整的推理过程
+        通过 stream_handler 实时显示（Rich美化）
+        同时通过 logger 记录到文件（如果指定了 --log-file）
         
         Args:
             ori_sql: 原始慢SQL语句
@@ -82,11 +89,11 @@ class DiagnosisAgent:
             preprocess_sql: 测试本条sql的前置sql
             clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
             user_prompt: 用户提示
+            stream_handler: 流式事件处理器
 
         Returns:
             诊断报告（自然语言）
         """
-        default_logger.info("开始执行慢SQL诊断")
         default_logger.info(f"SQL: {ori_sql[:100]}...")
         default_logger.info(f"涉及表: {tables}")
         default_logger.info(f"采样表: {sampled_tables}")
@@ -126,15 +133,25 @@ class DiagnosisAgent:
                 "conclusion": ""
             }
             
-            # 执行状态图
-            default_logger.info("开始执行LangGraph状态图")
-            final_state = self.graph.invoke(initial_state)
             
-            # 提取诊断结论
-            conclusion = final_state.get("conclusion", "")
+            conclusion = ""
+            final_state = None
             
-            if not conclusion:
-                # 如果没有结论，从最后一条消息中提取
+            async for event in self.graph.astream_events(initial_state, version="v2"):
+                # 通过 stream_handler 处理事件
+                if stream_handler:
+                    stream_handler.handle_event(event)
+                
+                # 提取最终状态（从 on_chain_end 事件）
+                if event.get("event") == "on_chain_end":
+                    event_data = event.get("data", {})
+                    output = event_data.get("output", {})
+                    if isinstance(output, dict) and "conclusion" in output:
+                        conclusion = output.get("conclusion", "")
+                        final_state = output
+            
+            # 如果没有从事件中提取到结论，则使用最后一条消息作为结论
+            if not conclusion and final_state:
                 messages = final_state.get("messages", [])
                 if messages:
                     last_message = messages[-1]
@@ -144,12 +161,99 @@ class DiagnosisAgent:
             if not conclusion:
                 conclusion = "诊断未能生成有效结论，请检查日志。"
             
-            default_logger.info("诊断完成")
-            default_logger.info(f"总迭代次数: {final_state.get('iteration', 0)}")
+            # default_logger.info("诊断完成（流式）")
+            if stream_handler:
+                summary = stream_handler.get_summary()
+                default_logger.info(f"总事件数: {summary['total_events']}, 迭代次数: {summary['iterations']}, 工具调用: {summary['tool_calls']}")
             
             return conclusion
             
         except Exception as e:
             error_msg = f"诊断过程发生错误: {str(e)}"
-            default_logger.error(error_msg)
+            default_logger.error(error_msg, exc_info=True)
             return error_msg
+    
+    async def diagnose_async(
+        self,
+        ori_sql: str,
+        schema: str,
+        tables: List[str],
+        exec_log: str = None,
+        sampled_tables: List[str] = None,
+        preprocess_sql: str = None,
+        clean_up_sql: str = None,
+        user_prompt: str = None
+    ) -> str:
+        """
+        异步执行慢SQL诊断（非流式模式）
+        
+        使用 astream_events(version="v2") 捕获完整过程
+        但不实时显示，而是收集事件后通过 logger 输出
+        
+        Args:
+            ori_sql: 原始慢SQL语句
+            schema: 相关表的schema信息（DDL语句）
+            tables: 相关表名列表
+            exec_log: 执行日志（包含平均执行时间、执行次数等）
+            sampled_tables: 采样表列表（可选）
+            preprocess_sql: 测试本条sql的前置sql
+            clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
+            user_prompt: 用户提示
+
+        Returns:
+            诊断报告（自然语言）
+        """
+        # 创建 logger 模式的 stream_handler
+        stream_handler = StreamHandler(mode="logger", logger=default_logger)
+        
+        # 复用流式诊断方法
+        return await self.diagnose_stream(
+            ori_sql=ori_sql,
+            schema=schema,
+            tables=tables,
+            exec_log=exec_log,
+            sampled_tables=sampled_tables,
+            preprocess_sql=preprocess_sql,
+            clean_up_sql=clean_up_sql,
+            user_prompt=user_prompt,
+            stream_handler=stream_handler
+        )
+    
+    def diagnose(
+        self,
+        ori_sql: str,
+        schema: str,
+        tables: List[str],
+        exec_log: str = None,
+        sampled_tables: List[str] = None,
+        preprocess_sql: str = None,
+        clean_up_sql: str = None,
+        user_prompt: str = None
+    ) -> str:
+        """
+        执行慢SQL诊断（同步包装器，保持向后兼容）
+        
+        Args:
+            ori_sql: 原始慢SQL语句
+            schema: 相关表的schema信息（DDL语句）
+            tables: 相关表名列表
+            exec_log: 执行日志（包含平均执行时间、执行次数等）
+            sampled_tables: 采样表列表（可选）
+            preprocess_sql: 测试本条sql的前置sql
+            clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
+            user_prompt: 用户提示
+
+        Returns:
+            诊断报告（自然语言）
+        """
+        # 内部调用异步方法，但对外保持同步接口
+        return asyncio.run(self.diagnose_async(
+            ori_sql=ori_sql,
+            schema=schema,
+            tables=tables,
+            exec_log=exec_log,
+            sampled_tables=sampled_tables,
+            preprocess_sql=preprocess_sql,
+            clean_up_sql=clean_up_sql,
+            user_prompt=user_prompt
+        ))

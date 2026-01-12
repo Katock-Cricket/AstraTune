@@ -47,7 +47,7 @@ class SandboxTool:
         Returns:
             格式化的执行结果字符串
         """
-        default_logger.info(f"Agent请求执行SQL: {sql[:100]}...")
+        # default_logger.info(f"Agent请求执行SQL: {sql[:100]}...")
         
         try:
             # 进行表名替换
@@ -56,7 +56,7 @@ class SandboxTool:
             # 执行前置sql
             if self.preprocess_sql:
                 result_pre = self.executor.execute(self.preprocess_sql, fetch=True)
-                default_logger.info(f"前置sql执行成功: {result_pre[:100]}...")
+                # default_logger.info(f"前置sql执行成功: {result_pre[:100]}...")
 
             # 执行SQL
             results = self.executor.execute(replaced_sql, fetch=True)
@@ -64,17 +64,17 @@ class SandboxTool:
             # 执行清理sql
             if self.clean_up_sql:
                 result_clean_up = self.executor.execute(self.clean_up_sql, fetch=True)
-                default_logger.info(f"清理sql执行成功: {result_clean_up[:100]}...")
+                # default_logger.info(f"清理sql执行成功: {result_clean_up[:100]}...")
             
             # 格式化结果返回给Agent
             formatted_result = self._format_results(results)
             
-            default_logger.info(f"SQL执行成功，返回结果长度: {len(formatted_result)}")
+            # default_logger.info(f"SQL执行成功，返回结果长度: {len(formatted_result)}")
             return formatted_result
             
         except Exception as e:
             error_msg = f"SQL执行失败: {str(e)}"
-            default_logger.error(error_msg)
+            # default_logger.error(error_msg)
             return error_msg
     
     def _format_results(self, results: list) -> str:

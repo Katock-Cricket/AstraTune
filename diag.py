@@ -1,7 +1,9 @@
 import argparse
 import sys
+import asyncio
 from utils.logger import setup_logger
 from utils.config_loader import load_all_configs, get_diagnosis_config
+from utils.stream_handler import StreamHandler
 from sandbox.mysql_executor import MySQLExecutor
 from sandbox.sandbox_manager import SandboxManager
 from diagnosis.agent import DiagnosisAgent
@@ -62,6 +64,13 @@ def parse_arguments():
         type=str,
         default=None,
         help="日志文件路径（可选，默认只输出到控制台）"
+    )
+    
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        default=False,
+        help="启用流式输出，实时显示Agent推理过程"
     )
     
     return parser.parse_args()
@@ -199,26 +208,49 @@ def main():
         logger.info("-" * 80)
         
         try:
-            conclusion = agent.diagnose(
-                ori_sql=args.sql,
-                schema=schema,
-                tables=tables,
-                exec_log=args.log,
-                sampled_tables=sandbox_info["sampled_tables"],
-                preprocess_sql=args.preprocess_sql,
-                clean_up_sql=args.clean_up_sql,
-                user_prompt=args.user_prompt
-            )
+            if args.stream:
+                # 流式模式：Rich显示 + Logger文件记录（如果指定了--log-file）
+                logger.info("使用流式模式执行诊断")
+                stream_handler = StreamHandler(mode="rich")
+                
+                # 异步执行流式诊断
+                conclusion = asyncio.run(agent.diagnose_stream(
+                    ori_sql=args.sql,
+                    schema=schema,
+                    tables=tables,
+                    exec_log=args.log,
+                    sampled_tables=sandbox_info["sampled_tables"],
+                    preprocess_sql=args.preprocess_sql,
+                    clean_up_sql=args.clean_up_sql,
+                    user_prompt=args.user_prompt,
+                    stream_handler=stream_handler
+                ))
+            else:
+                # 非流式模式：收集事件后通过Logger输出
+                logger.info("使用非流式模式执行诊断")
+                conclusion = agent.diagnose(
+                    ori_sql=args.sql,
+                    schema=schema,
+                    tables=tables,
+                    exec_log=args.log,
+                    sampled_tables=sandbox_info["sampled_tables"],
+                    preprocess_sql=args.preprocess_sql,
+                    clean_up_sql=args.clean_up_sql,
+                    user_prompt=args.user_prompt
+                )
             
             # 输出诊断结果
             logger.info("-" * 80)
             logger.info("诊断完成！")
             logger.info("=" * 80)
-            print("\n" + "=" * 80)
-            print("诊断结果")
-            print("=" * 80)
-            print(conclusion)
-            print("=" * 80 + "\n")
+            
+            # 流式模式下结论已经通过Rich显示，这里只做简单总结
+            if not args.stream:
+                print("\n" + "=" * 80)
+                print("诊断结果")
+                print("=" * 80)
+                print(conclusion)
+                print("=" * 80 + "\n")
             
         except Exception as e:
             logger.error(f"诊断执行失败: {e}")
