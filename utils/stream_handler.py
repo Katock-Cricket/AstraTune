@@ -162,7 +162,7 @@ class StreamHandler:
         # 工具调用完成
         elif event_type == "on_tool_end":
             tool_name = event.get("name", "unknown")
-            output = event_data.get("output", "")
+            output = event_data.get("output", "").content
             
             # 限制输出长度
             output_str = str(output)

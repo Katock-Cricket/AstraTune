@@ -105,7 +105,7 @@ class DiagnosisAgent:
             default_logger.info(f"清理sql: {clean_up_sql[:100]}...")
         if user_prompt:
             default_logger.info(f"用户提示: {user_prompt[:100]}...")
-                
+            
         try:
             # 创建系统提示
             system_prompt = create_system_prompt(enable_test=self.enable_test, enable_rag=self.enable_rag)
@@ -132,7 +132,6 @@ class DiagnosisAgent:
                 "max_iter": self.max_iter,
                 "conclusion": ""
             }
-            
             
             conclusion = ""
             final_state = None

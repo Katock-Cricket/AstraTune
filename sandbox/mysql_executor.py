@@ -1,3 +1,4 @@
+import re
 import pymysql
 import time
 from typing import Any, List, Dict, Optional
@@ -73,8 +74,8 @@ class MySQLExecutor(DBExecutor):
                     end_time = time.time()
                     execution_time = end_time - start_time
                     
-                    # 判断是否是查询语句
-                    if fetch and stmt.strip().upper().startswith(('SELECT', 'SHOW', 'EXPLAIN', 'DESC', 'DESCRIBE')):
+                    # 判断是否是查询语句（去掉注释行再提取首字）
+                    if fetch and re.sub(r'--.*', '', stmt).strip().upper().startswith(('SELECT', 'SHOW', 'EXPLAIN', 'DESC', 'DESCRIBE')):
                         result = cursor.fetchall()
                         all_results.append({
                             "sql": stmt,
