@@ -3,4 +3,5 @@ langgraph
 langchain
 langchain-openai
 pymysql
+psycopg2-binary
 rich>=13.0.0

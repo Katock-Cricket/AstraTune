@@ -1,21 +1,20 @@
 from sandbox.executor import DBExecutor
-from sandbox.table_mapper import TableMapper
 from utils.logger import default_logger
 
 
 class SandboxTool:
     """沙箱工具，封装数据库操作供Agent调用"""
     
-    def __init__(self, executor: DBExecutor, table_mapper: TableMapper):
+    def __init__(self, executor: DBExecutor):
         """
         初始化沙箱工具
         
         Args:
             executor: 数据库执行器
-            table_mapper: 表名映射器
         """
         self.executor = executor
-        self.table_mapper = table_mapper
+        self.preprocess_sql = None
+        self.clean_up_sql = None
 
     def register_preprocess_sql(self, preprocess_sql: str) -> None:
         """
@@ -49,17 +48,14 @@ class SandboxTool:
         """
         # default_logger.info(f"Agent请求执行SQL: {sql[:100]}...")
         
-        try:
-            # 进行表名替换
-            replaced_sql = self.table_mapper.replace_table_names(sql)
-            
+        try:            
             # 执行前置sql
             if self.preprocess_sql:
                 result_pre = self.executor.execute(self.preprocess_sql, fetch=True)
                 # default_logger.info(f"前置sql执行成功: {result_pre[:100]}...")
 
             # 执行SQL
-            results = self.executor.execute(replaced_sql, fetch=True)
+            results = self.executor.execute(sql, fetch=True)
 
             # 执行清理sql
             if self.clean_up_sql:
@@ -159,9 +155,7 @@ def create_sandbox_tool_function(sandbox_tool: SandboxTool):
         - 调整会话参数（SET）
         - 查询统计信息
         - 执行测试SQL等...
-        
-        系统会自动将表名替换为沙箱表名，你只需使用原始表名即可。
-        
+                
         Args:
             sql: 要执行的SQL语句，可以包含多条语句（用分号分隔）
         

@@ -87,7 +87,8 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "tool"
         
-        raise RuntimeError(f"LLM 未能成功调用工具，可能是型号问题。请检查日志: {last_message}")
+        default_logger.warning(f"LLM 未能成功调用工具，可能是型号问题。请检查日志: {last_message}")
+        return "end"
     
     async def force_conclusion_node(state: AgentState, config: RunnableConfig) -> AgentState:
         """强制输出结论节点：当达到最大迭代次数时调用
@@ -139,7 +140,6 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
             "tool": "tools",
             "end": END,
             "force_end": "force_conclusion",
-            "continue": "reasoning"
         }
     )
     

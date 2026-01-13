@@ -19,7 +19,7 @@ def test_agent_initialization():
     
     try:
         # 加载配置
-        configs = load_all_configs("configs")
+        configs = load_all_configs()
         diag_config = get_diagnosis_config(configs)
         agent_config = diag_config.get("agent", {})
         
@@ -54,7 +54,7 @@ def test_agent_simple_communication():
     
     try:
         # 加载配置
-        configs = load_all_configs("configs")
+        configs = load_all_configs()
         diag_config = get_diagnosis_config(configs)
         agent_config = diag_config.get("agent", {})
         

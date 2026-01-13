@@ -1,6 +1,7 @@
 import argparse
 import sys
 import asyncio
+from sandbox.pg_executor import PGExecutor
 from utils.logger import setup_logger
 from utils.config_loader import load_all_configs, get_diagnosis_config
 from utils.stream_handler import StreamHandler
@@ -27,7 +28,8 @@ def parse_arguments():
     parser.add_argument(
         "--tables",
         type=str,
-        default=None,
+        nargs='+',
+        default=[],
         help="相关数据库表名，多个表用逗号分隔，如不填，则不涉及已有的表"
     )
     
@@ -87,16 +89,11 @@ def main():
     logger.info("慢SQL诊断系统启动")
     logger.info("=" * 80)
     
-    # 解析表名列表
-    if args.tables:
-        tables = [t.strip() for t in args.tables.split(",") if t.strip()]
-        logger.info(f"涉及的表: {tables}")
-    else:
-        tables = []
+    tables = args.tables
     
     try:
         # 1. 加载配置
-        logger.info("步骤 1/7: 加载配置文件")
+        logger.info("步骤 1/6: 加载配置文件")
         configs = load_all_configs()
         diag_config = get_diagnosis_config(configs)
         
@@ -121,10 +118,18 @@ def main():
         logger.info(f"沙箱数据库: {sandbox_config.get('host')}:{sandbox_config.get('port')}/{sandbox_config.get('database')}")
         
         # 2. 连接目标数据库和沙箱数据库
-        logger.info("步骤 2/7: 连接数据库")
+        logger.info("步骤 2/6: 连接数据库")
         
         # 创建目标数据库executor（只读）
-        target_executor = MySQLExecutor(target_db_config)
+        dialect = target_db_config.get("dialect")
+        if dialect == "mysql":
+            target_executor = MySQLExecutor(target_db_config)
+        elif dialect == "postgresql":
+            target_executor = PGExecutor(target_db_config)
+        else:
+            logger.error(f"不支持的数据库类型: {dialect}")
+            sys.exit(1)
+        
         try:
             target_executor.connect()
             logger.info("目标数据库连接成功")
@@ -133,7 +138,15 @@ def main():
             sys.exit(1)
         
         # 创建沙箱数据库executor（读写）
-        sandbox_executor = MySQLExecutor(sandbox_config)
+        dialect = sandbox_config.get("dialect")
+        if dialect == "mysql":
+            sandbox_executor = MySQLExecutor(sandbox_config)
+        elif dialect == "postgresql":
+            sandbox_executor = PGExecutor(sandbox_config)
+        else:
+            logger.error(f"不支持的数据库类型: {dialect}")
+            sys.exit(1)
+        
         try:
             sandbox_executor.connect()
             logger.info("沙箱数据库连接成功")
@@ -143,7 +156,7 @@ def main():
             sys.exit(1)
         
         # 3. 获取表DDL
-        logger.info("步骤 3/7: 从目标数据库获取表结构信息")
+        logger.info("步骤 3/6: 从目标数据库获取表结构信息")
         schema_parts = []
         for table in tables:
             try:
@@ -161,8 +174,13 @@ def main():
         logger.info(f"成功获取 {len(tables)} 张表的结构信息")
         
         # 4. 搭建沙箱环境
-        logger.info("步骤 4/7: 搭建沙箱环境（从目标数据库复制到沙箱数据库）")
+        logger.info("步骤 4/6: 搭建沙箱环境（从目标数据库复制到沙箱数据库）")
         sandbox_manager = SandboxManager(target_executor, sandbox_executor, sandbox_config)
+
+        try:
+            sandbox_manager.cleanup_sandbox()
+        except Exception as e:
+            logger.error(f"清理沙箱失败: {e}")
         
         try:
             sandbox_info = sandbox_manager.setup_sandbox(tables)
@@ -171,7 +189,7 @@ def main():
             # 打印沙箱信息
             for table_info in sandbox_info["tables"]:
                 logger.info(
-                    f"  {table_info['original']} -> {table_info['sandbox']} "
+                    f"  {table_info['original']} "
                     f"({table_info['original_rows']} 行, "
                     f"{'采样' if table_info['is_sampled'] else '完整拷贝'})"
                 )
@@ -182,9 +200,9 @@ def main():
             sys.exit(1)
         
         # 5. 初始化Agent和工具
-        logger.info("步骤 5/7: 初始化Agent")
+        logger.info("步骤 5/6: 初始化Agent")
         # Agent只使用沙箱数据库executor
-        sandbox_tool = SandboxTool(sandbox_executor, sandbox_manager.table_mapper)
+        sandbox_tool = SandboxTool(sandbox_executor)
         # 注册前置和清理sql
         if args.preprocess_sql:
             sandbox_tool.register_preprocess_sql(args.preprocess_sql)
@@ -204,7 +222,7 @@ def main():
             sys.exit(1)
         
         # 6. 执行诊断
-        logger.info("步骤 6/7: 执行诊断")
+        logger.info("步骤 6/6: 执行诊断")
         logger.info("-" * 80)
         
         try:
@@ -255,13 +273,7 @@ def main():
         except Exception as e:
             logger.error(f"诊断执行失败: {e}")
             raise
-        
-        # 7. 清理沙箱和关闭连接
-        logger.info("步骤 7/7: 清理沙箱环境")
-        try:
-            sandbox_manager.cleanup_sandbox()
-        except Exception as e:
-            logger.error(f"清理沙箱失败: {e}")
+    
         
         # 关闭数据库连接
         target_executor.close()

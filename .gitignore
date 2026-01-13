@@ -207,3 +207,4 @@ marimo/_lsp/
 __marimo__/
 /.virtualme
 configs/agents.json
+configs/configs.py
