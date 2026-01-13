@@ -1,6 +1,8 @@
 # AstraTune
 基于大模型的卫星互联网数据库性能诊断与优化
 
+![image-20260113170146294](res/image-20260113170146294.png)
+
 ## 安装依赖
 ```shell
 conda create -n at python=3.10
