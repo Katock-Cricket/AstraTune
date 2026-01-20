@@ -1,9 +1,4 @@
 def create_system_prompt(enable_test: bool = False, enable_rag: bool = False) -> str:
-
-    """
-    创建系统提示词
-    """
-
     sandbox_tool_desc = """
     **execute_sql**: 在沙箱数据库中执行SQL语句
    - 可以执行EXPLAIN分析查询计划

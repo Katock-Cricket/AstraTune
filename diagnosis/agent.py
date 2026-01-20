@@ -171,52 +171,7 @@ class DiagnosisAgent:
             error_msg = f"诊断过程发生错误: {str(e)}"
             default_logger.error(error_msg, exc_info=True)
             return error_msg
-    
-    async def diagnose_async(
-        self,
-        ori_sql: str,
-        schema: str,
-        tables: List[str],
-        exec_log: str = None,
-        sampled_tables: List[str] = None,
-        preprocess_sql: str = None,
-        clean_up_sql: str = None,
-        user_prompt: str = None
-    ) -> str:
-        """
-        异步执行慢SQL诊断（非流式模式）
-        
-        使用 astream_events(version="v2") 捕获完整过程
-        但不实时显示，而是收集事件后通过 logger 输出
-        
-        Args:
-            ori_sql: 原始慢SQL语句
-            schema: 相关表的schema信息（DDL语句）
-            tables: 相关表名列表
-            exec_log: 执行日志（包含平均执行时间、执行次数等）
-            sampled_tables: 采样表列表（可选）
-            preprocess_sql: 测试本条sql的前置sql
-            clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
-            user_prompt: 用户提示
-
-        Returns:
-            诊断报告（自然语言）
-        """
-        # 创建 logger 模式的 stream_handler
-        stream_handler = StreamHandler(mode="logger", logger=default_logger)
-        
-        # 复用流式诊断方法
-        return await self.diagnose_stream(
-            ori_sql=ori_sql,
-            schema=schema,
-            tables=tables,
-            exec_log=exec_log,
-            sampled_tables=sampled_tables,
-            preprocess_sql=preprocess_sql,
-            clean_up_sql=clean_up_sql,
-            user_prompt=user_prompt,
-            stream_handler=stream_handler
-        )
+       
     
     def diagnose(
         self,
@@ -245,8 +200,11 @@ class DiagnosisAgent:
         Returns:
             诊断报告（自然语言）
         """
-        # 内部调用异步方法，但对外保持同步接口
-        return asyncio.run(self.diagnose_async(
+         # 创建 logger 模式的 stream_handler
+        stream_handler = StreamHandler(mode="logger", logger=default_logger)
+        
+        # 复用流式诊断方法
+        conclusion = asyncio.run(self.diagnose_stream(
             ori_sql=ori_sql,
             schema=schema,
             tables=tables,
@@ -254,5 +212,8 @@ class DiagnosisAgent:
             sampled_tables=sampled_tables,
             preprocess_sql=preprocess_sql,
             clean_up_sql=clean_up_sql,
-            user_prompt=user_prompt
+            user_prompt=user_prompt,
+            stream_handler=stream_handler
         ))
+
+        return conclusion

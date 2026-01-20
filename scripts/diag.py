@@ -13,7 +13,6 @@ from tools.rag_tool import RAGTool
 
 
 def parse_arguments():
-    """解析命令行参数"""
     parser = argparse.ArgumentParser(
         description="慢SQL诊断系统 - 基于LLM Agent的数据库性能诊断工具"
     )

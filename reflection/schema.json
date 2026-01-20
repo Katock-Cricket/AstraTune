@@ -1,0 +1,30 @@
+{
+    "system": "（所属系统）如：network",
+    "issue_sql": "（具体出现问题的原SQL）...;...",
+    "db_id": "（数据库名）...",
+    "tables": [
+        "（问题涉及的所有表名）如：t_link",
+        "t_sat"
+    ],
+    "fields": [
+        {
+            "table": "（问题涉及的表名）如：t_link",
+            "name": "（问题涉及的字段名）如：sat_id",
+            "type": "（问题涉及的字段的类型），如bigint"
+        },
+        {
+            "table": "t_link",
+            "name": "create_time",
+            "type": "datetime"
+        }
+    ],
+    "root_cause": {
+        "category": "索引缺失",
+        "detail": "...一句话描述问题原因..."
+    },
+    "solution": {
+        "category": "索引优化",
+        "detail": "...一句话描述解决方案...",
+        "sol_sql": "（重写的SQL查询或解决问题的SQL语句）CREATE INDEX ...;..."
+    }
+}
