@@ -1,6 +1,7 @@
 import argparse
 import sys
 import asyncio
+sys.path.append("../")
 from sandbox.pg_executor import PGExecutor
 from utils.logger import setup_logger
 from utils.config_loader import load_all_configs, get_diagnosis_config

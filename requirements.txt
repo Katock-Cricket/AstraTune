@@ -4,5 +4,6 @@ langchain
 langchain-openai
 pymysql
 psycopg2-binary
+# dmPython 需手动编译
 rich>=13.0.0
 openpyxl
