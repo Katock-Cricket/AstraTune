@@ -1,13 +1,60 @@
 from typing import List, Dict, Any, Optional
 import asyncio
+import json
+import os
+import re
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from diagnosis.graph import create_diagnosis_graph
-from diagnosis.prompts import create_system_prompt, create_initial_message
+from diagnosis.prompts import (
+    create_system_prompt,
+    create_initial_message,
+    create_table_extraction_system_prompt,
+    create_table_extraction_user_message,
+    _tables_from_schema_ddl,
+)
 from tools.sandbox_tool import SandboxTool, create_sandbox_tool_function
 from tools.rag_tool import RAGTool, create_rag_tool_function
 from utils.logger import default_logger
 from utils.stream_handler import StreamHandler
+
+
+def _parse_tables_from_llm_text(content: str) -> List[str]:
+    """从 LLM 回复中解析 {"tables":[...]}。"""
+    if not content or not isinstance(content, str):
+        return []
+    text = content.strip()
+    for m in re.finditer(r"\{[\s\S]*?\}", text):
+        try:
+            obj = json.loads(m.group())
+            if isinstance(obj, dict) and "tables" in obj:
+                raw = obj["tables"]
+                if isinstance(raw, list):
+                    return [str(t).strip() for t in raw if str(t).strip()]
+        except json.JSONDecodeError:
+            continue
+    return []
+
+
+async def extract_involved_tables(sql: str, llm_config: dict) -> List[str]:
+    """
+    第一步：仅用 LLM 从 SQL 中提取涉及的物理表名（不调用沙箱工具）。
+    """
+    llm = ChatOpenAI(
+        base_url=llm_config.get("base_url"),
+        model=llm_config.get("model"),
+        api_key=llm_config.get("api_key") or os.environ.get("OPENAI_API_KEY"),
+        temperature=0,
+    )
+    system = create_table_extraction_system_prompt()
+    human = create_table_extraction_user_message(sql)
+    resp = await llm.ainvoke(
+        [SystemMessage(content=system), HumanMessage(content=human)]
+    )
+    content = resp.content if resp and isinstance(resp.content, str) else ""
+    tables = _parse_tables_from_llm_text(content)
+    return tables
 
 
 class DiagnosisAgent:
@@ -65,7 +112,6 @@ class DiagnosisAgent:
         self,
         ori_sql: str,
         schema: str,
-        tables: List[str],
         exec_log: str = None,
         sampled_tables: List[str] = None,
         preprocess_sql: str = None,
@@ -82,8 +128,7 @@ class DiagnosisAgent:
         
         Args:
             ori_sql: 原始慢SQL语句
-            schema: 相关表的schema信息（DDL语句）
-            tables: 相关表名列表
+            schema: 相关表的schema信息（DDL语句），须含 `-- 表: name` 行
             exec_log: 执行日志（包含平均执行时间、执行次数等）
             sampled_tables: 采样表列表（可选）
             preprocess_sql: 测试本条sql的前置sql
@@ -94,8 +139,9 @@ class DiagnosisAgent:
         Returns:
             诊断报告（自然语言）
         """
+        tables_in_schema = _tables_from_schema_ddl(schema)
         default_logger.info(f"SQL: {ori_sql[:100]}...")
-        default_logger.info(f"涉及表: {tables}")
+        default_logger.info(f"涉及表(来自 schema): {tables_in_schema}")
         default_logger.info(f"采样表: {sampled_tables}")
         if exec_log:
             default_logger.info(f"执行日志: {exec_log[:100]}...")
@@ -114,7 +160,6 @@ class DiagnosisAgent:
             initial_message = create_initial_message(
                 sql=ori_sql,
                 schema=schema,
-                tables=tables,
                 exec_log=exec_log,
                 sampled_tables=sampled_tables,
                 preprocess_sql=preprocess_sql,
@@ -177,7 +222,6 @@ class DiagnosisAgent:
         self,
         ori_sql: str,
         schema: str,
-        tables: List[str],
         exec_log: str = None,
         sampled_tables: List[str] = None,
         preprocess_sql: str = None,
@@ -189,8 +233,7 @@ class DiagnosisAgent:
         
         Args:
             ori_sql: 原始慢SQL语句
-            schema: 相关表的schema信息（DDL语句）
-            tables: 相关表名列表
+            schema: 相关表的schema信息（DDL语句），须含 `-- 表: name` 行
             exec_log: 执行日志（包含平均执行时间、执行次数等）
             sampled_tables: 采样表列表（可选）
             preprocess_sql: 测试本条sql的前置sql
@@ -207,7 +250,6 @@ class DiagnosisAgent:
         conclusion = asyncio.run(self.diagnose_stream(
             ori_sql=ori_sql,
             schema=schema,
-            tables=tables,
             exec_log=exec_log,
             sampled_tables=sampled_tables,
             preprocess_sql=preprocess_sql,

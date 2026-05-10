@@ -1,0 +1,17 @@
+{
+  "diagnosis": {
+    "dialect": "postgresql",
+    "host": "127.0.0.1",
+    "port": 5433,
+    "user": "postgres",
+    "password": "astratune_sandbox",
+    "database": "astratune_sandbox",
+    "copy_thr": 10000,
+    "sample_size": 10000,
+    "sampling_strategy": "random",
+    "sampling_params": {
+      "time_column": "created_at"
+    },
+    "batch_size": 1000
+  }
+}

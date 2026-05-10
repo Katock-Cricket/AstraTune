@@ -1,3 +1,32 @@
+import re
+
+
+def create_table_extraction_system_prompt() -> str:
+    """从慢 SQL 中识别涉及的关系表（不含诊断结论）。"""
+    return """你是数据库专家。你的唯一任务：根据给定的 SQL 语句，列出该语句在执行时会访问到的**基表**（真实表名，不含别名）。
+
+规则：
+- 包含 FROM / JOIN / UPDATE / INSERT INTO / DELETE FROM / MERGE 等中出现的表；子查询若引用物理表也要列出。
+- 使用数据库中的实际表名；若 SQL 中带 schema 前缀（如 public.orders），请保留完整形式。
+- 去重，不要猜测不存在的表。
+- **不要**输出解释、Markdown、诊断内容。
+
+输出格式（严格仅一行 JSON 对象，无其它文字）：
+{"tables":["schema.table1","table2"]}
+
+若无法确定任何表，输出：{"tables":[]}
+"""
+
+
+def create_table_extraction_user_message(sql: str) -> str:
+    return f"""请分析以下 SQL 并输出 JSON：
+
+```sql
+{sql}
+```
+"""
+
+
 def create_system_prompt(enable_test: bool = False, enable_rag: bool = False) -> str:
     sandbox_tool_desc = """
     **execute_sql**: 在沙箱数据库中执行SQL语句
@@ -80,10 +109,15 @@ def create_system_prompt(enable_test: bool = False, enable_rag: bool = False) ->
 """
 
 
+def _tables_from_schema_ddl(schema: str) -> list:
+    """从由 get_create_table_ddl 拼接的 schema 文本中解析 `-- 表: name` 行。"""
+    found = re.findall(r"^--\s*表:\s*(\S+)", schema, re.MULTILINE)
+    return list(dict.fromkeys(found))
+
+
 def create_initial_message(
     sql: str,
     schema: str,
-    tables: list,
     exec_log: str = None,
     sampled_tables: list = None,
     preprocess_sql: str = None,
@@ -95,8 +129,7 @@ def create_initial_message(
     
     Args:
         sql: 慢SQL语句
-        schema: 表结构信息（DDL）
-        tables: 相关表名列表
+        schema: 表结构信息（DDL），其中应含 `-- 表: <name>` 行以便展示涉及表
         exec_log: 执行日志
         sampled_tables: 采样表列表
         preprocess_sql: 测试本条sql的前置sql
@@ -106,6 +139,8 @@ def create_initial_message(
     Returns:
         格式化的初始消息
     """
+    tables = _tables_from_schema_ddl(schema)
+    tables_display = ", ".join(tables) if tables else "（见下方 DDL 注释中的表名）"
     message_parts = [
         "请诊断以下慢SQL查询的性能问题：",
         "",
@@ -113,7 +148,7 @@ def create_initial_message(
         f"```sql\n{sql}\n```",
         "",
         "## 相关表信息",
-        f"涉及的表: {', '.join(tables)}",
+        f"涉及的表: {tables_display}",
         "",
         "## 相关表结构（DDL）",
         f"```sql\n{schema}\n```",

@@ -1,3 +1,4 @@
+import os
 from typing import TypedDict, Annotated, Sequence
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
@@ -18,7 +19,8 @@ class AgentState(TypedDict):
 
 def create_diagnosis_graph(llm_config: dict, tools: list):
     """
-    创建诊断Agent的LangGraph状态图
+    创建诊断Agent的LangGraph状态图。
+    涉及表名的解析、拉取 DDL、setup_sandbox 由调用方（如 scripts/diag）在入图之前完成。
     
     Args:
         llm_config: LLM配置
@@ -31,7 +33,7 @@ def create_diagnosis_graph(llm_config: dict, tools: list):
     llm = ChatOpenAI(
         base_url=llm_config.get("base_url"),
         model=llm_config.get("model"),
-        api_key=llm_config.get("api_key"),
+        api_key=llm_config.get("api_key") or os.environ.get("OPENAI_API_KEY"),
         temperature=llm_config.get("temperature", 0.7)
     )
     

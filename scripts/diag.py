@@ -8,7 +8,7 @@ from utils.config_loader import load_all_configs, get_diagnosis_config
 from utils.stream_handler import StreamHandler
 from sandbox.mysql_executor import MySQLExecutor
 from sandbox.sandbox_manager import SandboxManager
-from diagnosis.agent import DiagnosisAgent
+from diagnosis.agent import DiagnosisAgent, extract_involved_tables
 from tools.sandbox_tool import SandboxTool
 from tools.rag_tool import RAGTool
 
@@ -23,14 +23,6 @@ def parse_arguments():
         type=str,
         required=True,
         help="需要诊断的慢SQL语句, 多条sql用分号分隔"
-    )
-    
-    parser.add_argument(
-        "--tables",
-        type=str,
-        nargs='+',
-        default=[],
-        help="相关数据库表名，多个表用逗号分隔，如不填，则不涉及已有的表"
     )
     
     parser.add_argument(
@@ -71,11 +63,25 @@ def parse_arguments():
     parser.add_argument(
         "--stream",
         action="store_true",
-        default=False,
+        default=True,
         help="启用流式输出，实时显示Agent推理过程"
     )
     
     return parser.parse_args()
+
+
+def _normalize_tables_for_dialect(tables: list, dialect: str) -> list:
+    """MySQL 的 SHOW CREATE TABLE 使用单反引号包裹整段标识符，LLM 若返回 db.table 时只保留表名。"""
+    if dialect != "mysql":
+        return list(dict.fromkeys(tables))
+    out = []
+    for t in tables:
+        s = (t or "").strip()
+        if "." in s:
+            s = s.split(".")[-1].strip()
+        if s:
+            out.append(s)
+    return list(dict.fromkeys(out))
 
 
 def main():
@@ -88,12 +94,10 @@ def main():
     logger.info("=" * 80)
     logger.info("慢SQL诊断系统启动")
     logger.info("=" * 80)
-    
-    tables = args.tables
-    
+        
     try:
         # 1. 加载配置
-        logger.info("步骤 1/6: 加载配置文件")
+        logger.info("步骤 1/7: 加载配置文件")
         configs = load_all_configs()
         diag_config = get_diagnosis_config(configs)
         
@@ -118,16 +122,16 @@ def main():
         logger.info(f"沙箱数据库: {sandbox_config.get('host')}:{sandbox_config.get('port')}/{sandbox_config.get('database')}")
         
         # 2. 连接目标数据库和沙箱数据库
-        logger.info("步骤 2/6: 连接数据库")
+        logger.info("步骤 2/7: 连接数据库")
         
         # 创建目标数据库executor（只读）
-        dialect = target_db_config.get("dialect")
-        if dialect == "mysql":
+        target_dialect = target_db_config.get("dialect")
+        if target_dialect == "mysql":
             target_executor = MySQLExecutor(target_db_config)
-        elif dialect == "postgresql":
+        elif target_dialect == "postgresql":
             target_executor = PGExecutor(target_db_config)
         else:
-            logger.error(f"不支持的数据库类型: {dialect}")
+            logger.error(f"不支持的数据库类型: {target_dialect}")
             sys.exit(1)
         
         try:
@@ -155,8 +159,31 @@ def main():
             target_executor.close()
             sys.exit(1)
         
-        # 3. 获取表DDL
-        logger.info("步骤 3/6: 从目标数据库获取表结构信息")
+        # 3. 由 LLM 从 SQL 提取涉及表（先于沙箱与诊断）
+        logger.info("步骤 3/7: 从 SQL 中提取涉及表（LLM）")
+        llm_cfg = agent_config.get("llm", {})
+        if not llm_cfg:
+            logger.error("未配置 llm，无法自动提取表名；请使用 --tables 指定表")
+            target_executor.close()
+            sandbox_executor.close()
+            sys.exit(1)
+        try:
+            tables = asyncio.run(extract_involved_tables(args.sql, llm_cfg))
+        except Exception as e:
+            logger.error(f"从 SQL 提取表名失败: {e}")
+            target_executor.close()
+            sandbox_executor.close()
+            sys.exit(1)
+        tables = _normalize_tables_for_dialect(tables, target_dialect)
+        if not tables:
+            logger.error("未能从 SQL 中识别出任何表；请检查 SQL 或使用 --tables 手动指定")
+            target_executor.close()
+            sandbox_executor.close()
+            sys.exit(1)
+        logger.info(f"识别到的表: {tables}")
+        
+        # 4. 获取表DDL
+        logger.info("步骤 4/7: 从目标数据库获取表结构信息")
         schema_parts = []
         for table in tables:
             try:
@@ -173,8 +200,8 @@ def main():
         schema = "\n".join(schema_parts)
         logger.info(f"成功获取 {len(tables)} 张表的结构信息")
         
-        # 4. 搭建沙箱环境
-        logger.info("步骤 4/6: 搭建沙箱环境（从目标数据库复制到沙箱数据库）")
+        # 5. 搭建沙箱环境
+        logger.info("步骤 5/7: 搭建沙箱环境（从目标数据库复制到沙箱数据库）")
         sandbox_manager = SandboxManager(target_executor, sandbox_executor, sandbox_config)
 
         try:
@@ -199,8 +226,8 @@ def main():
             sandbox_executor.close()
             sys.exit(1)
         
-        # 5. 初始化Agent和工具
-        logger.info("步骤 5/6: 初始化Agent")
+        # 6. 初始化Agent和工具
+        logger.info("步骤 6/7: 初始化Agent")
         # Agent只使用沙箱数据库executor
         sandbox_tool = SandboxTool(sandbox_executor)
         # 注册前置和清理sql
@@ -221,8 +248,8 @@ def main():
             sandbox_executor.close()
             sys.exit(1)
         
-        # 6. 执行诊断
-        logger.info("步骤 6/6: 执行诊断")
+        # 7. 执行诊断
+        logger.info("步骤 7/7: 执行诊断")
         logger.info("-" * 80)
         
         try:
@@ -235,7 +262,6 @@ def main():
                 conclusion = asyncio.run(agent.diagnose_stream(
                     ori_sql=args.sql,
                     schema=schema,
-                    tables=tables,
                     exec_log=args.log,
                     sampled_tables=sandbox_info["sampled_tables"],
                     preprocess_sql=args.preprocess_sql,
@@ -249,7 +275,6 @@ def main():
                 conclusion = agent.diagnose(
                     ori_sql=args.sql,
                     schema=schema,
-                    tables=tables,
                     exec_log=args.log,
                     sampled_tables=sandbox_info["sampled_tables"],
                     preprocess_sql=args.preprocess_sql,

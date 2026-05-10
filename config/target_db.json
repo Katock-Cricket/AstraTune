@@ -1,0 +1,9 @@
+{
+  "dialect": "postgresql",
+  "host": "127.0.0.1",
+  "port": 5432,
+  "user": "root",
+  "password": "123123",
+  "database": "financial",
+  "query_api_base": "http://127.0.0.1:8010"
+}

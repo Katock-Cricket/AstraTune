@@ -11,7 +11,7 @@ class MySQLExecutor(DBExecutor):
     
     def connect(self) -> None:
         """连接MySQL数据库"""
-        try:
+        try:            
             self.connection = pymysql.connect(
                 host=self.config.get("host", "localhost"),
                 port=self.config.get("port", 3306),

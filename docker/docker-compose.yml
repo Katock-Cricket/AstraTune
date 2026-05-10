@@ -1,0 +1,64 @@
+# AstraTune：BIRD 风格双 PostgreSQL + 目标库 HTTP 查询 API
+# 将 Google Drive 解压后的 postgre_table_dumps 放到本目录 ./postgre_table_dumps（或挂载同路径）
+# 脚本默认：docker compose --env-file stack.defaults.env（国内镜像源）；直连 Hub：USE_OFFICIAL_DOCKER_HUB=1
+
+services:
+  pg_target:
+    build:
+      context: ./pg_target
+      args:
+        POSTGRES_IMAGE: ${POSTGRES_BASE_IMAGE:-postgres:14.12}
+    container_name: astratune_pg_target
+    environment:
+      TZ: Asia/Hong_Kong
+    volumes:
+      - ./postgre_table_dumps:/docker-entrypoint-initdb.d/postgre_table_dumps
+    ports:
+      - "5432:5432"
+    command:
+      - "-c"
+      - "max_connections=300"
+      - "-c"
+      - "shared_buffers=256MB"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  pg_sandbox:
+    image: ${POSTGRES_BASE_IMAGE:-postgres:14.12}
+    container_name: astratune_pg_sandbox
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: astratune_sandbox
+      POSTGRES_DB: astratune_sandbox
+      TZ: Asia/Hong_Kong
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d astratune_sandbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  target_db_api:
+    build:
+      context: ./target_db_api
+      args:
+        PYTHON_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    container_name: astratune_target_db_api
+    ports:
+      - "8010:8010"
+    environment:
+      PGHOST: pg_target
+      PGPORT: "5432"
+      PGUSER: root
+      PGPASSWORD: "123123"
+      API_HOST: 0.0.0.0
+      API_PORT: "8010"
+      QUERY_API_KEY: ""
+    depends_on:
+      - pg_target
