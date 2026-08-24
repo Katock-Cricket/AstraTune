@@ -548,10 +548,7 @@ async def _call_with_retry_async(
         try:
             runnable = make_runnable()
             result = await _invoke_async(
-                runnable,
-                input,
-                config,
-                kwargs,
+                runnable, input, config, kwargs,
                 response_timeout=response_timeout,
             )
             if attempt > 1:
@@ -564,26 +561,9 @@ async def _call_with_retry_async(
             return result
         except BaseException as exc:
             last_exc = exc
-            if on_loop_closed is not None and _is_retryable_exception(exc) and attempt < max_attempts:
-                try:
-                    on_loop_closed()
-                except Exception:
-                    pass
-            if not _is_retryable_exception(exc) or attempt >= max_attempts:
-                raise
-            reason = getattr(exc, "reason", None) or type(exc).__name__
-            if _is_event_loop_closed_error(exc):
-                reason = "event_loop_closed"
-            log_timing(
-                "llm_retry",
-                (time.perf_counter() - t0) * 1000.0,
-                attempt=attempt,
-                max_attempts=max_attempts,
-                reason=str(reason),
-            )
-            default_logger.warning(
-                f"LLM 请求重试 {attempt}/{max_attempts}: {reason} ({exc})"
-            )
+            if _handle_retry_exc(exc, attempt, max_attempts, t0, on_loop_closed):
+                continue
+            raise
     assert last_exc is not None
     raise last_exc
 
@@ -606,10 +586,7 @@ def _call_with_retry_sync(
         try:
             runnable = make_runnable()
             result = _invoke_sync(
-                runnable,
-                input,
-                config,
-                kwargs,
+                runnable, input, config, kwargs,
                 response_timeout=response_timeout,
             )
             if attempt > 1:
@@ -622,28 +599,45 @@ def _call_with_retry_sync(
             return result
         except BaseException as exc:
             last_exc = exc
-            if on_loop_closed is not None and _is_retryable_exception(exc) and attempt < max_attempts:
-                try:
-                    on_loop_closed()
-                except Exception:
-                    pass
-            if not _is_retryable_exception(exc) or attempt >= max_attempts:
-                raise
-            reason = getattr(exc, "reason", None) or type(exc).__name__
-            if _is_event_loop_closed_error(exc):
-                reason = "event_loop_closed"
-            log_timing(
-                "llm_retry",
-                (time.perf_counter() - t0) * 1000.0,
-                attempt=attempt,
-                max_attempts=max_attempts,
-                reason=str(reason),
-            )
-            default_logger.warning(
-                f"LLM 请求重试 {attempt}/{max_attempts}: {reason} ({exc})"
-            )
+            if _handle_retry_exc(exc, attempt, max_attempts, t0, on_loop_closed):
+                continue
+            raise
     assert last_exc is not None
     raise last_exc
+
+
+def _handle_retry_exc(
+    exc: BaseException,
+    attempt: int,
+    max_attempts: int,
+    t0: float,
+    on_loop_closed=None,
+) -> bool:
+    """共享：记录重试日志 + 必要时 on_loop_closed；返回 True 表示可继续重试。
+
+    不可重试或耗尽时返回 False，调用方 raise。
+    """
+    if on_loop_closed is not None and _is_retryable_exception(exc) and attempt < max_attempts:
+        try:
+            on_loop_closed()
+        except Exception:
+            pass
+    if not _is_retryable_exception(exc) or attempt >= max_attempts:
+        return False
+    reason = getattr(exc, "reason", None) or type(exc).__name__
+    if _is_event_loop_closed_error(exc):
+        reason = "event_loop_closed"
+    log_timing(
+        "llm_retry",
+        (time.perf_counter() - t0) * 1000.0,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        reason=str(reason),
+    )
+    default_logger.warning(
+        f"LLM 请求重试 {attempt}/{max_attempts}: {reason} ({exc})"
+    )
+    return True
 
 
 class PooledChatOpenAI(Runnable):
@@ -732,10 +726,6 @@ class PooledChatOpenAI(Runnable):
                 max_attempts=self._max_attempts,
                 on_loop_closed=on_loop_closed,
             )
-
-
-# 旧名兼容（文档/未改完的 import）
-GatedChatOpenAI = PooledChatOpenAI
 
 
 def make_chat_openai(

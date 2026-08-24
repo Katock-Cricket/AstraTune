@@ -30,6 +30,11 @@ def _d_drive_free_gb() -> Optional[float]:
 
 
 def find_running_batch_pids(script_name: str = "run_bird_critic.py") -> list[int]:
+    """查找运行中的批跑主进程。
+
+    注意：只匹配 python 进程；本函数启动的 powershell 查询子进程
+    自身命令行也含 script_name 字符串，若不过滤进程名会恒假阳性。
+    """
     if sys.platform != "win32":
         return []
     try:
@@ -38,7 +43,7 @@ def find_running_batch_pids(script_name: str = "run_bird_critic.py") -> list[int
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{script_name}*' }} | Select-Object -ExpandProperty ProcessId",
+                f"Get-CimInstance Win32_Process | Where-Object {{ $_.Name -like 'python*' -and $_.CommandLine -like '*{script_name}*' }} | Select-Object -ExpandProperty ProcessId",
             ],
             text=True,
             stderr=subprocess.DEVNULL,

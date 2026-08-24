@@ -38,14 +38,11 @@ def test_sqls_list():
 
 
 def test_smart_reset_skip(monkeypatch=None):
-    calls = {"cleanup": 0, "setup": 0}
+    calls = {"reset": 0}
 
     class FakeMgr:
-        def cleanup_sandbox(self):
-            calls["cleanup"] += 1
-
-        def setup_sandbox(self, tables):
-            calls["setup"] += 1
+        def reset_sandbox(self, tables):
+            calls["reset"] += 1
 
     from utils.pipeline import make_reset_fn
 
@@ -53,14 +50,14 @@ def test_smart_reset_skip(monkeypatch=None):
         FakeMgr(), ["t"], smart=True, initially_dirty=True
     )
     assert reset_fn() == "full"
-    assert calls["cleanup"] == 1
+    assert calls["reset"] == 1
     # 只读后再次 reset 应跳过
     mark_sql("SELECT 1")
     assert reset_fn() == "skipped"
-    assert calls["cleanup"] == 1
+    assert calls["reset"] == 1
     mark_sql("UPDATE t SET a=1")
     assert reset_fn() == "full"
-    assert calls["cleanup"] == 2
+    assert calls["reset"] == 2
 
 
 if __name__ == "__main__":

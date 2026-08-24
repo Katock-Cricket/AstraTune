@@ -52,11 +52,15 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | ---- | ---- |
 | `diagnosis/` | 诊断 Agent（LangGraph ReAct），入口 `scripts/diag.py` |
 | `optimization/` | Generate–Verify（无 Reflect），单例入口 `scripts/opt.py` |
+| `optimization/rules/` | Verify 否决规则注册表（common / category / **flash_overfit 单题规则，换题集需重估**） |
+| `utils/inference_runner.py` | **统一单条推理链路**（`run_single_instance`；diag/opt/infer/批跑 run_one 四入口共用） |
 | `scripts/infer.py` | 单例端到端：诊断 → 优化 → `pred_sqls` |
-| `scripts/run_bird_critic.py` | BIRD 批量推理（默认 subprocess 隔离） |
+| `scripts/run_bird_critic.py` | BIRD 批量推理编排（默认 subprocess 隔离） |
 | `scripts/run_bird_worker.py` | 单题子进程 worker |
 | `scripts/slim_pred_jsonl.py` | pred JSONL 去重 + slim |
 | `sandbox/` | PG/MySQL 执行器、`SandboxManager`、`statistics.py`、模板缓存 |
+| `sandbox/db_admin.py` | 沙箱域底层（执行器创建/建库/槽位库名；打破循环依赖） |
+| `utils/batch_records.py` | 批跑记录纯函数（done 判定/slim/finalize/兜底行/汇总） |
 | `tools/sandbox_tool.py` | LangChain `execute_sql` |
 | `config/*.json` | agents / sandbox / target_db |
 | `docker/` | PG target:5432、PG sandbox:5433、MySQL target:3306、MySQL sandbox:3307、API:8010 |
@@ -86,6 +90,8 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 - 诊断结论标记：`【诊断结论】`；评测交付字段：`pred_sqls`（`list[str]`）。
 - LLM：`config/agents.json` + **`OPENAI_API_KEY` / `OPENAI_API_KEYS`**（`;` 分隔）；当前 `llm_key_mode=auto`，`llm_workers=4`。批跑沙箱 `--workers` 与 LLM 池独立。默认 `--isolate subprocess`。
 - 单条示例见 `data/测试数据.md`；`--db-id` 可覆盖目标库名。
+- **改规则/纯函数先补特征测试再动手**：`tests/`（142 用例，`pytest tests/ -q`，无需 DB）；`optimization/rules/flash_overfit.py` 为单题过拟合规则，仅对 Flash 子集有效，换题集/方言需重估，勿当通用规则扩展。
+- 单条推理改动统一改 `utils/inference_runner.py`；四个 CLI（diag/opt/infer/run_one）只是薄壳，勿在壳里加逻辑。
 
 ## 环境速查
 

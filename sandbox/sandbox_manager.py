@@ -1,6 +1,11 @@
 from typing import List, Dict, Any
+
 from sandbox.executor import DBExecutor
+from sandbox.mysql_executor import MySQLExecutor
+from sandbox.pg_executor import PGExecutor
+from sandbox.statistics import inject_statistics
 from utils.logger import default_logger
+from utils.sandbox_fidelity import empty_fidelity
 from utils.timing import timed_stage
 
 
@@ -41,16 +46,13 @@ class SandboxManager:
     def _get_quote_char(self, executor: DBExecutor) -> str:
         """
         根据执行器类型返回对应的引用符号
-        
+
         Args:
             executor: 数据库执行器
-        
+
         Returns:
             引用符号（MySQL: `, PostgreSQL: "）
         """
-        from sandbox.mysql_executor import MySQLExecutor
-        from sandbox.pg_executor import PGExecutor
-        
         if isinstance(executor, MySQLExecutor):
             return "`"
         elif isinstance(executor, PGExecutor):
@@ -164,8 +166,6 @@ class SandboxManager:
     
     def _create_table_structure(self, table_name: str) -> None:
         """在沙箱创建表结构：先序列，再 CREATE TABLE；失败则 strip nextval 重试。"""
-        from sandbox.pg_executor import PGExecutor
-
         create_ddl = self.target_executor.get_create_table_ddl(table_name)
         is_pg = isinstance(self.target_executor, PGExecutor) and isinstance(
             self.sandbox_executor, PGExecutor
@@ -194,8 +194,6 @@ class SandboxManager:
 
     def _sync_sequences_after_load(self, table_name: str) -> None:
         """插入数据后恢复 OWNED BY / setval（尽力）。"""
-        from sandbox.pg_executor import PGExecutor
-
         if not isinstance(self.target_executor, PGExecutor):
             return
         if not isinstance(self.sandbox_executor, PGExecutor):
@@ -262,8 +260,6 @@ class SandboxManager:
         except Exception:
             slot_db = ""
 
-        from utils.sandbox_fidelity import empty_fidelity
-
         dialect = "mysql" if self.target_quote == "`" else "postgresql"
 
         fidelity = empty_fidelity(dialect=dialect, slot_db=slot_db)
@@ -277,8 +273,6 @@ class SandboxManager:
         }
         
         try:
-            from sandbox.mysql_executor import MySQLExecutor
-
             if isinstance(self.sandbox_executor, MySQLExecutor):
                 self.sandbox_executor.execute("SET FOREIGN_KEY_CHECKS = 0", fetch=False)
 
@@ -315,7 +309,6 @@ class SandboxManager:
                 stats_report = {"ok": [], "fail": [], "skip": []}
                 # 统计信息克隆：采样后伪装生产态基数，保障 EXPLAIN 保真度
                 try:
-                    from sandbox.statistics import inject_statistics
                     with timed_stage("sandbox_stats_inject", table=resolved):
                         stats_report = inject_statistics(
                             self.target_executor,
@@ -339,8 +332,6 @@ class SandboxManager:
                 }
                 sandbox_info["tables"].append(table_entry)
                 fidelity["tables"].append(table_entry)
-            
-            from sandbox.mysql_executor import MySQLExecutor
 
             if isinstance(self.sandbox_executor, MySQLExecutor):
                 try:
@@ -350,13 +341,11 @@ class SandboxManager:
 
             default_logger.info(f"沙箱环境搭建完成，共{len(tables)}张表 slot={slot_db}")
             return sandbox_info
-            
+
         except Exception as e:
             default_logger.error(f"沙箱环境搭建失败: {e}")
             # 尝试清理已创建的表
             try:
-                from sandbox.mysql_executor import MySQLExecutor
-
                 if isinstance(self.sandbox_executor, MySQLExecutor):
                     try:
                         self.sandbox_executor.execute("SET FOREIGN_KEY_CHECKS = 1", fetch=False)
@@ -378,7 +367,7 @@ class SandboxManager:
                 ex.connect()
             except Exception as e:
                 if _slot_db_missing(e, db_name):
-                    from utils.pipeline import ensure_sandbox_database
+                    from sandbox.db_admin import ensure_sandbox_database
 
                     default_logger.warning(f"沙箱槽位库缺失，重建: {db_name} ({e})")
                     ensure_sandbox_database(dict(ex.config), db_name)
@@ -422,7 +411,7 @@ class SandboxManager:
                 release_template_binding(self)
         slot_db = str((getattr(self.sandbox_executor, "config", {}) or {}).get("database") or "")
         if slot_db:
-            from utils.pipeline import ensure_sandbox_database
+            from sandbox.db_admin import ensure_sandbox_database
 
             ensure_sandbox_database(dict(self.sandbox_executor.config), slot_db)
         with timed_stage("sandbox_reset_full"):
@@ -431,9 +420,6 @@ class SandboxManager:
 
     def cleanup_sandbox(self) -> None:
         """清理沙箱环境，直接清空整个沙箱数据库"""
-        from sandbox.mysql_executor import MySQLExecutor
-        from sandbox.pg_executor import PGExecutor
-        
         default_logger.info("开始清空沙箱数据库")
         self._ensure_sandbox_executor_ready()
         with timed_stage("sandbox_cleanup"):
@@ -454,41 +440,43 @@ class SandboxManager:
         try:
             # 禁用外键检查
             self.sandbox_executor.execute("SET FOREIGN_KEY_CHECKS = 0", fetch=False)
-            
-            # 获取当前数据库中的所有表
-            db_name = self.sandbox_executor.config.get("database")
-            get_tables_sql = f"""
-                SELECT TABLE_NAME 
-                FROM information_schema.TABLES 
-                WHERE TABLE_SCHEMA = '{db_name}' 
-                AND TABLE_TYPE = 'BASE TABLE'
-            """
+
+            # 获取当前数据库中的所有表（库名/表名均做标识符转义，防注入）
+            db_name = str(self.sandbox_executor.config.get("database") or "")
+            db_lit = db_name.replace("'", "''")
+            get_tables_sql = (
+                "SELECT TABLE_NAME "
+                "FROM information_schema.TABLES "
+                f"WHERE TABLE_SCHEMA = '{db_lit}' "
+                "AND TABLE_TYPE = 'BASE TABLE'"
+            )
             results = self.sandbox_executor.execute(get_tables_sql, fetch=True)
-            
+
             if not results or not results[0].get("rows"):
                 default_logger.info("沙箱数据库中没有表需要删除")
                 return
-            
+
             tables = [row["TABLE_NAME"] for row in results[0]["rows"]]
             default_logger.info(f"找到 {len(tables)} 张表需要删除")
-            
+
             # 删除所有表
             for table in tables:
                 try:
-                    drop_sql = f"DROP TABLE IF EXISTS `{table}`"
+                    safe_table = str(table).replace("`", "``")
+                    drop_sql = f"DROP TABLE IF EXISTS `{safe_table}`"
                     self.sandbox_executor.execute(drop_sql, fetch=False)
                     default_logger.info(f"成功删除表: {table}")
                 except Exception as e:
                     default_logger.error(f"删除表失败 {table}: {e}")
-            
+
             # 恢复外键检查
             self.sandbox_executor.execute("SET FOREIGN_KEY_CHECKS = 1", fetch=False)
-            
+
         except Exception as e:
             # 确保恢复外键检查
             try:
                 self.sandbox_executor.execute("SET FOREIGN_KEY_CHECKS = 1", fetch=False)
-            except:
+            except Exception:
                 pass
             raise
     

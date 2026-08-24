@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import copy
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -18,29 +18,32 @@ from typing import Any, Dict, List, Optional, Set
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from diagnosis.agent import DiagnosisAgent, extract_involved_tables
-from optimization.graph import run_optimization
-from tools.sandbox_tool import SandboxTool
-from utils.config_loader import get_batch_config, load_all_configs, normalize_dialect
-from utils.diag_extract import extract_pred_sqls_from_diagnosis
+from utils.batch_records import (
+    _parse_worker_stdout,
+    _summarize,
+    _timeout_row,
+    append_jsonl,
+    finalize_inference_record,
+    has_pred_sqls,
+    is_inference_success,
+    load_all_pred_records,
+    load_done_ids,
+    slim_output_record,
+)
 from utils.batch_preflight import preflight_batch_inference, release_batch_lock
+from utils.config_loader import get_batch_config, load_all_configs, normalize_dialect
+from utils.inference_runner import run_single_instance
 from utils.logger import setup_logger
 from utils.llm import batch_llm_pool_options, format_pool_status, init_llm_pool
-from utils.timing import clear_timing_context, log_timing, log_timing_summary, set_timing_context
 from utils.pipeline import (
     dedupe_jsonl_by_id,
-    fetch_schema_ddl,
     filter_by_dialect,
     instance_issue_sql,
     load_jsonl,
-    make_verify_fns,
     merge_schema_and_input,
-    normalize_tables_for_dialect,
-    prepare_sandbox,
-    resolve_and_validate_tables,
-    setup_executors,
     sql_list_to_text,
 )
+from utils.timing import log_timing, set_timing_context
 
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "run_bird_worker.py"
 _MAX_DIAG_CHARS = 4000
@@ -167,150 +170,6 @@ def load_records(args, dialect: str) -> List[Dict[str, Any]]:
     return usable
 
 
-def load_done_ids(
-    output_path: str, *, rerun_nonok: bool = False
-) -> Dict[Any, Dict[str, Any]]:
-    path = Path(output_path)
-    if not path.is_file():
-        return {}
-    done: Dict[Any, Dict[str, Any]] = {}
-    for rec in load_jsonl(path):
-        iid = rec.get("instance_id")
-        if iid is None:
-            continue
-        if rerun_nonok:
-            # 仅 Verify 通过视为完成；fallback / 失败 / 空 pred 可重跑
-            if is_inference_success(rec):
-                done[iid] = rec
-        elif is_inference_success(rec) or has_pred_sqls(rec.get("pred_sqls")):
-            done[iid] = rec
-    return done
-
-
-def load_all_pred_records(output_path: str) -> Dict[Any, Dict[str, Any]]:
-    """输出文件中每个 instance_id 的最后一条（含失败/未完成）。"""
-    path = Path(output_path)
-    if not path.is_file():
-        return {}
-    by_id: Dict[Any, Dict[str, Any]] = {}
-    for rec in load_jsonl(path):
-        iid = rec.get("instance_id")
-        if iid is not None:
-            by_id[iid] = rec
-    return by_id
-
-
-def has_pred_sqls(pred: Any) -> bool:
-    if isinstance(pred, list):
-        return any(str(x).strip() for x in pred)
-    return bool(str(pred or "").strip())
-
-
-def is_inference_success(rec: Dict[str, Any]) -> bool:
-    """推理成功：Verify 通过、无 fallback/error、pred_sqls 非空。不含 issue_sql 硬填。"""
-    if rec.get("error"):
-        return False
-    meta = rec.get("optimization_meta") or {}
-    if meta.get("fallback"):
-        return False
-    if not meta.get("success"):
-        return False
-    return has_pred_sqls(rec.get("pred_sqls"))
-
-
-def slim_output_record(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """压缩 pred 行体积，避免 JSONL/日志拖死磁盘与终端。"""
-    out = copy.deepcopy(rec)
-    for key in ("original_schema", "preprocess_schema"):
-        out.pop(key, None)
-    dr = out.get("diagnosis_report")
-    if isinstance(dr, str) and len(dr) > _MAX_DIAG_CHARS:
-        out["diagnosis_report"] = dr[:_MAX_DIAG_CHARS] + "…[truncated]"
-    ts = out.get("timing_summary")
-    if ts is not None:
-        raw = json.dumps(ts, ensure_ascii=False)
-        if len(raw) > _MAX_TIMING_JSON:
-            stages = (ts or {}).get("stages") or []
-            out["timing_summary"] = {
-                "truncated": True,
-                "stages_count": len(stages),
-            }
-    return out
-
-
-def finalize_inference_record(out: Dict[str, Any]) -> Dict[str, Any]:
-    """有可用 pred 时不清空；hard_fail 仅限真空候选/异常。"""
-    meta = out.setdefault("optimization_meta", {})
-    nonempty = has_pred_sqls(out.get("pred_sqls"))
-    if nonempty:
-        meta["hard_fail"] = False
-        return out
-    meta["success"] = False
-    meta["hard_fail"] = True
-    out["pred_sqls"] = []
-    if not out.get("error"):
-        reasons = meta.get("failure_reasons") or []
-        out["error"] = reasons[0] if reasons else "推理未通过 Verify 且无可用候选"
-    return out
-
-
-def append_jsonl(record: Dict[str, Any], path: str) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    slim = slim_output_record(record)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(slim, ensure_ascii=False) + "\n")
-
-
-def _timeout_row(
-    rec: Dict[str, Any],
-    err: str,
-    *,
-    mode: str,
-    prior_pred: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    out = copy.deepcopy(rec)
-    out.pop("sol_sql", None)
-    out.pop("test_cases", None)
-    out["error"] = err
-    if prior_pred and has_pred_sqls(prior_pred.get("pred_sqls")):
-        out["pred_sqls"] = list(prior_pred.get("pred_sqls") or [])
-        prev_dr = prior_pred.get("diagnosis_report")
-        if prev_dr and str(prev_dr).strip():
-            out["diagnosis_report"] = str(prev_dr)
-        prev_meta = prior_pred.get("optimization_meta") or {}
-        out["optimization_meta"] = {
-            "success": False,
-            "rounds": int(prev_meta.get("rounds") or 0),
-            "fallback": True,
-            "hard_fail": False,
-            "mode": mode,
-            "failure_reasons": [err],
-        }
-    else:
-        out["pred_sqls"] = []
-        out["optimization_meta"] = {
-            "success": False,
-            "rounds": 0,
-            "fallback": False,
-            "hard_fail": True,
-            "mode": mode,
-            "failure_reasons": [err],
-        }
-    return finalize_inference_record(out)
-
-
-def _parse_worker_stdout(stdout: str) -> Optional[Dict[str, Any]]:
-    for ln in reversed((stdout or "").splitlines()):
-        line = ln.strip()
-        if not line:
-            continue
-        try:
-            return json.loads(line)
-        except json.JSONDecodeError:
-            continue
-    return None
-
-
 def _kill_proc_tree(proc: subprocess.Popen) -> None:
     try:
         proc.kill()
@@ -340,65 +199,57 @@ def _run_one_subprocess(
         "mode": mode,
         "slot_index": slot_index,
         "workers": workers,
-        "prior_pred": prior_pred,
     }
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="bird_worker_")
-    os.close(fd)
+    if prior_pred:
+        payload["prior_pred"] = {
+            "pred_sqls": prior_pred.get("pred_sqls") or [],
+            "diagnosis_report": prior_pred.get("diagnosis_report") or "",
+            "optimization_meta": prior_pred.get("optimization_meta") or {},
+        }
+    blob = json.dumps(payload, ensure_ascii=False)
+
+    worker_path = str(Path(__file__).resolve().parent / "run_bird_worker.py")
     try:
-        Path(path).write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        proc = subprocess.Popen(
+            [sys.executable, worker_path, blob],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(Path(__file__).resolve().parent.parent),
         )
-        cmd = [sys.executable, str(_WORKER_SCRIPT), "--payload", path]
-        run_timeout = timeout_s if timeout_s > 0 else None
-        try:
-            cp = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=run_timeout,
-            )
-        except subprocess.TimeoutExpired as te:
-            logger.error(f"{iid}: 子进程超时 {timeout_s}s，已强杀")
-            if te.process is not None:
-                _kill_proc_tree(te.process)
-            return _timeout_row(
-                record,
-                f"instance_timeout_{timeout_s}s",
-                mode=mode,
-                prior_pred=prior_pred,
-            )
+    except Exception as e:
+        logger.error(f"启动 worker 失败 {iid}: {e}")
+        return _timeout_row(record, f"worker spawn 失败: {e}", mode=mode, prior_pred=prior_pred)
 
-        if cp.returncode != 0:
-            tail = (cp.stderr or cp.stdout or "").strip()[-500:]
-            logger.error(f"{iid}: worker exit {cp.returncode}: {tail}")
-            parsed = _parse_worker_stdout(cp.stdout or "")
-            if parsed is not None and has_pred_sqls(parsed.get("pred_sqls")):
-                parsed.setdefault("error", tail or f"worker_exit_{cp.returncode}")
-                return finalize_inference_record(parsed)
-            return _timeout_row(
-                record,
-                f"worker_exit_{cp.returncode}",
-                mode=mode,
-                prior_pred=prior_pred,
-            )
+    try:
+        out, err = proc.communicate(timeout=timeout_s if timeout_s > 0 else None)
+    except subprocess.TimeoutExpired:
+        _kill_proc_tree(proc)
+        logger.warning(f"子进程超时 {iid} ({timeout_s}s)，强杀")
+        return _timeout_row(record, f"子进程超时 ({timeout_s}s)", mode=mode, prior_pred=prior_pred)
 
-        parsed = _parse_worker_stdout(cp.stdout or "")
-        if parsed is None:
-            logger.error(f"{iid}: worker 无有效 JSON 输出")
-            return _timeout_row(
-                record,
-                "worker_empty_output",
-                mode=mode,
-                prior_pred=prior_pred,
+    if proc.returncode != 0:
+        tail = (err or "")[-1500:]
+        logger.warning(
+            f"worker exit code={proc.returncode} {iid}: {tail.strip()[:400]}"
+        )
+        if "worker_exit" in (err or "") or "Traceback" in (err or ""):
+            row = _timeout_row(
+                record, f"worker_exit({proc.returncode})", mode=mode, prior_pred=prior_pred
             )
-        return finalize_inference_record(parsed)
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+            row["error"] = (row.get("error") or "") + f" | stderr_tail={tail[:600]}"
+            return row
+    parsed = _parse_worker_stdout(out or "")
+    if not parsed:
+        logger.warning(f"worker 无 stdout JSON {iid}; out_tail={(out or '')[-400:]}")
+        if (out or "").strip() == "":
+            return _timeout_row(record, "empty_output", mode=mode, prior_pred=prior_pred)
+        return _timeout_row(
+            record, "worker 无 stdout JSON", mode=mode, prior_pred=prior_pred
+        )
+    return parsed
 
 
 def run_one(
@@ -411,275 +262,55 @@ def run_one(
     workers: int = 1,
     prior_pred: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """单题推理（进程内）。核心链路见 utils/inference_runner.run_single_instance。"""
     out = copy.deepcopy(record)
     out.pop("sol_sql", None)
     out.pop("test_cases", None)
 
-    issue_sql = instance_issue_sql(record)
-    db_id = record.get("db_id") or "financial"
     category = record.get("category") or (
         "Efficiency" if record.get("efficiency") else "Query"
     )
     efficiency = record.get("efficiency")
     if efficiency is None and str(category).lower() == "efficiency":
         efficiency = True
-    query = record.get("query") or ""
-    preprocess = sql_list_to_text(record.get("preprocess_sql"))
-    cleanup = sql_list_to_text(record.get("clean_up_sql"))
     schema_from_record = (
         record.get("original_schema") or record.get("preprocess_schema") or ""
     )
 
-    target_ex = sandbox_ex = None
-    manager = None
-    sandbox_cfg: Dict[str, Any] = {}
-    t0 = time.perf_counter()
-    try:
-        set_timing_context(
-            instance_id=str(record.get("instance_id") or "-"),
-            db_id=str(db_id),
-            dialect=dialect,
-            worker=slot_index if slot_index is not None else 0,
-            slot=slot_index,
-        )
-        target_ex, sandbox_ex, agent_cfg, opt_cfg, _t, sandbox_cfg = setup_executors(
-            dialect=dialect,
-            db_id=db_id,
-            slot_index=slot_index,
-            workers=workers,
-        )
-        set_timing_context(slot=sandbox_cfg.get("database"))
-        llm_cfg = agent_cfg.get("llm", {})
-        sql_text = sql_list_to_text(issue_sql)
+    result = run_single_instance(
+        sql=instance_issue_sql(record),
+        query=record.get("query") or "",
+        category=category,
+        dialect=dialect,
+        db_id=record.get("db_id") or "financial",
+        preprocess_sql=sql_list_to_text(record.get("preprocess_sql")) or None,
+        clean_up_sql=sql_list_to_text(record.get("clean_up_sql")) or None,
+        original_schema=str(schema_from_record or ""),
+        efficiency=efficiency,
+        mode=mode,
+        prior_diagnosis=(prior_pred or {}).get("diagnosis_report"),
+        slot_index=slot_index,
+        workers=workers,
+        instance_id=str(record.get("instance_id") or "-"),
+        logger=logger,
+    )
 
-        tables = extract_involved_tables(
-            sql_text, llm_cfg, user_prompt=str(query or "")
-        )
-        tables = normalize_tables_for_dialect(tables, dialect)
-        tables = resolve_and_validate_tables(
-            tables,
-            target_ex,
-            dialect=dialect,
-            original_schema=str(schema_from_record or ""),
-            hint_text=f"{query}\n{sql_text}",
-        )
-        if not tables:
-            raise RuntimeError("未能从 issue_sql/用户问题提取表名")
-
-        schema = fetch_schema_ddl(target_ex, tables)
-        if schema_from_record and not schema.strip():
-            schema = str(schema_from_record)
-
-        prepared = prepare_sandbox(
-            target_ex,
-            sandbox_ex,
-            sandbox_cfg,
-            tables,
-            db_id=db_id,
-            dialect=dialect,
-        )
-        manager = prepared["manager"]
-        sandbox_info = prepared["info"]
-        from utils.sandbox_fidelity import format_fidelity_text, mark_preprocess_applied
-
-        fidelity = sandbox_info.get("fidelity") or {}
-        if preprocess:
-            fidelity = mark_preprocess_applied(fidelity, True)
-            sandbox_info["fidelity"] = fidelity
-        fidelity_text = format_fidelity_text(fidelity)
-
-        diagnosis_report = ""
-        skip_diag = mode == "opt_only"
-        if not skip_diag:
-            tool = SandboxTool(sandbox_ex)
-
-            def _on_reset(info: Dict[str, Any]) -> None:
-                nonlocal fidelity, fidelity_text, sandbox_info
-                sandbox_info = {**sandbox_info, **(info or {})}
-                fidelity = sandbox_info.get("fidelity") or fidelity
-                if preprocess:
-                    fidelity = mark_preprocess_applied(fidelity, True)
-                    sandbox_info["fidelity"] = fidelity
-                fidelity_text = format_fidelity_text(fidelity)
-
-            tool.bind_sandbox_reset(manager, tables, on_full_reset=_on_reset)
-            if preprocess:
-                tool.register_preprocess_sql(preprocess)
-                tool.apply_preprocess_once()
-            if cleanup:
-                tool.register_clean_up_sql(cleanup)
-            agent = DiagnosisAgent(agent_cfg, tool)
-            diagnosis_report = agent.diagnose(
-                ori_sql=sql_text,
-                schema=schema,
-                sampled_tables=sandbox_info.get("sampled_tables"),
-                preprocess_sql=preprocess or None,
-                clean_up_sql=cleanup or None,
-                user_prompt=query or None,
-                sandbox_fidelity=fidelity_text,
-            )
-        else:
-            prev_dr = (prior_pred or {}).get("diagnosis_report")
-            if prev_dr and str(prev_dr).strip():
-                diagnosis_report = str(prev_dr).strip()
-                logger.info("opt_only: 复用已有 diagnosis_report")
-            else:
-                diagnosis_report = f"跳过诊断。用户问题: {query}"
-
-        if mode == "diag_only":
-            pred, used_fb = extract_pred_sqls_from_diagnosis(
-                diagnosis_report, fallback_issue_sql=issue_sql
-            )
-            out["pred_sqls"] = pred
-            out["diagnosis_report"] = diagnosis_report
-            out["optimization_meta"] = {
-                "success": not used_fb,
-                "rounds": 0,
-                "fallback": used_fb,
-                "mode": mode,
-                "failure_reasons": [],
-            }
-            if used_fb:
-                out["error"] = "diag_only: 未能从诊断抽取 SQL，回退 issue_sql"
-            logger.info(
-                f"{record.get('instance_id')}: diag_only pred={len(pred)} fallback={used_fb}"
-            )
-            return out
-
-        smart = str(opt_cfg.get("verify_isolation", "smart_reset")).lower() != "full_reset"
-        reset_fn, execute_fn, explain_fn = make_verify_fns(
-            manager,
-            tables,
-            sandbox_ex,
-            dialect,
-            preprocess_sql=preprocess or None,
-            smart_reset=smart,
-        )
-
-        opt = run_optimization(
-            diagnosis_report=diagnosis_report,
-            issue_sql=issue_sql,
-            query=query,
-            schema=schema,
-            category=category,
-            dialect=dialect,
-            efficiency=efficiency if isinstance(efficiency, bool) else None,
-            preprocess_sql=preprocess or None,
-            clean_up_sql=cleanup or None,
-            sandbox_fidelity=fidelity_text,
-            sampled_tables=list(sandbox_info.get("sampled_tables") or []),
-            opt_config=opt_cfg,
-            reset_fn=reset_fn,
-            execute_fn=execute_fn,
-            explain_fn=explain_fn,
-        )
-
-        out["pred_sqls"] = opt.pred_sqls
-        out["diagnosis_report"] = diagnosis_report
-        out["optimization_meta"] = {
-            "success": opt.success,
-            "rounds": opt.rounds,
-            "fallback": opt.fallback,
-            "mode": mode,
-            "failure_reasons": opt.failure_reasons,
-        }
-        if opt.error:
-            out["error"] = opt.error
-        finalize_inference_record(out)
-        logger.info(
-            f"{record.get('instance_id')}: pred_sqls={len(out.get('pred_sqls') or [])} "
-            f"success={opt.success} rounds={opt.rounds} fallback={opt.fallback} "
-            f"hard_fail={out.get('optimization_meta', {}).get('hard_fail')}"
-        )
-        return out
-    except Exception as e:
-        logger.error(f"{record.get('instance_id')} 失败: {e}", exc_info=True)
-        if not has_pred_sqls(out.get("pred_sqls")):
-            out["pred_sqls"] = []
-        out["error"] = str(e)
-        out["optimization_meta"] = {
-            "success": False,
-            "rounds": 0,
-            "fallback": False,
-            "hard_fail": not has_pred_sqls(out.get("pred_sqls")),
-            "mode": mode,
-            "failure_reasons": [str(e)],
-        }
-        return out
-    finally:
-        out["elapsed_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
-        log_timing(
-            "run_one_total",
-            out["elapsed_ms"],
-            slot_db=sandbox_cfg.get("database") if sandbox_cfg else None,
-        )
-        try:
-            summary = log_timing_summary()
-            out["timing_summary"] = summary
-        except Exception:
-            out["timing_summary"] = {"stages": []}
-        clear_timing_context()
-        try:
-            if manager is not None:
-                try:
-                    from sandbox.template_cache import release_template_binding
-
-                    release_template_binding(manager)
-                except Exception:
-                    pass
-                manager.cleanup_sandbox()
-        except Exception:
-            pass
-        try:
-            if target_ex is not None:
-                target_ex.close()
-        except Exception:
-            pass
-        try:
-            if sandbox_ex is not None:
-                sandbox_ex.close()
-        except Exception:
-            pass
-
-
-def _summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    n = len(rows)
-    success = 0
-    fallback = 0
-    errors = 0
-    hard_fail = 0
-    inference_ok = 0
-    empty_pred = 0
-    elapsed = []
-    for r in rows:
-        meta = r.get("optimization_meta") or {}
-        if meta.get("success"):
-            success += 1
-        if meta.get("fallback"):
-            fallback += 1
-        if meta.get("hard_fail"):
-            hard_fail += 1
-        if r.get("error"):
-            errors += 1
-        if is_inference_success(r):
-            inference_ok += 1
-        if r.get("elapsed_ms") is not None:
-            elapsed.append(float(r["elapsed_ms"]))
-        if not has_pred_sqls(r.get("pred_sqls")):
-            empty_pred += 1
-    elapsed_sorted = sorted(elapsed)
-    p50 = elapsed_sorted[len(elapsed_sorted) // 2] if elapsed_sorted else None
-    return {
-        "total": n,
-        "success": success,
-        "inference_ok": inference_ok,
-        "fallback": fallback,
-        "hard_fail": hard_fail,
-        "empty_pred": empty_pred,
-        "with_error": errors,
-        "elapsed_ms_mean": round(sum(elapsed) / len(elapsed), 1) if elapsed else None,
-        "elapsed_ms_p50": p50,
-    }
+    out["pred_sqls"] = result.pred_sqls
+    out["diagnosis_report"] = result.diagnosis_report
+    out["optimization_meta"] = result.meta
+    if result.error:
+        out["error"] = result.error
+    out["elapsed_ms"] = result.elapsed_ms
+    out["timing_summary"] = result.timing_summary
+    finalize_inference_record(out)
+    logger.info(
+        f"{record.get('instance_id')}: pred_sqls={len(out.get('pred_sqls') or [])} "
+        f"success={out['optimization_meta'].get('success')} "
+        f"rounds={out['optimization_meta'].get('rounds')} "
+        f"fallback={out['optimization_meta'].get('fallback')} "
+        f"hard_fail={out['optimization_meta'].get('hard_fail')}"
+    )
+    return out
 
 
 def main():
@@ -738,9 +369,6 @@ def main():
 
 def _run_batch(args, logger, dialect, mode, configs, batch_cfg, workers, records, done_map, pred_map):
 
-    if args.resume and done_map and not Path(args.output).is_file():
-        # 不应发生
-        pass
     if not args.resume:
         # 覆盖写：先清空
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -759,7 +387,7 @@ def _run_batch(args, logger, dialect, mode, configs, batch_cfg, workers, records
     )
 
     outputs: List[Dict[str, Any]] = list(done_map.values()) if args.resume else []
-    write_lock = __import__("threading").Lock()
+    write_lock = threading.Lock()
     slot_q: Optional[Any] = None
     if workers > 1:
         from queue import Queue

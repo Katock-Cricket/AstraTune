@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""单题推理子进程：供 run_bird_critic --isolate subprocess 调用，超时后父进程可强杀。"""
+"""单题推理子进程：供 run_bird_critic --isolate subprocess 调用，超时后父进程可强杀。
+
+输入：sys.argv[1] 为 JSON payload（含 record/dialect/mode/slot_index/workers/prior_pred）
+输出：stdout 最后一行为结果 JSON
+"""
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -12,16 +15,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="BIRD 单题 worker（stdout 一行 JSON）")
-    p.add_argument("--payload", type=str, required=True, help="payload JSON 文件路径")
-    args = p.parse_args()
+    if len(sys.argv) < 2:
+        sys.stderr.write("worker: 缺少 payload 参数\n")
+        sys.exit(2)
 
-    payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
+    payload = json.loads(sys.argv[1])
+    from utils.batch_records import slim_output_record
     from utils.config_loader import get_batch_config, load_all_configs
     from utils.llm import batch_llm_pool_options, init_llm_pool
     from utils.logger import setup_logger
 
-    from scripts.run_bird_critic import run_one, slim_output_record
+    # 直接走统一推理链路（run_one 已是薄壳，仅做记录合并）
+    from scripts.run_bird_critic import run_one
 
     configs = load_all_configs()
     batch_cfg = get_batch_config(configs)

@@ -273,7 +273,7 @@ def _admin_cfg(sandbox_cfg: Dict[str, Any], dialect: str) -> Dict[str, Any]:
 
 
 def _make_admin(sandbox_cfg: Dict[str, Any], dialect: str):
-    from utils.pipeline import create_executor
+    from sandbox.db_admin import create_executor
 
     admin = create_executor(_admin_cfg(sandbox_cfg, dialect))
     admin.connect()
@@ -316,7 +316,7 @@ def _template_is_ready(manager, dialect, sandbox_cfg, tpl_name: str) -> bool:
 
 
 def _read_meta_ready(sandbox_cfg, dialect, tpl_name: str) -> bool:
-    from utils.pipeline import create_executor
+    from sandbox.db_admin import create_executor
 
     cfg = dict(sandbox_cfg)
     cfg["database"] = tpl_name
@@ -347,7 +347,7 @@ def _read_meta_ready(sandbox_cfg, dialect, tpl_name: str) -> bool:
 
 
 def _ensure_db(sandbox_cfg, dialect, name: str) -> None:
-    from utils.pipeline import ensure_sandbox_database
+    from sandbox.db_admin import ensure_sandbox_database
 
     ensure_sandbox_database(sandbox_cfg, name)
 
@@ -488,7 +488,7 @@ def _snapshot_slot_to_template(
     if dialect == "mysql":
         _ensure_db(sandbox_cfg, dialect, tpl_name)
         _mysql_copy_tables(manager.sandbox_executor, slot_db, tpl_name, tables)
-        from utils.pipeline import create_executor
+        from sandbox.db_admin import create_executor
 
         cfg = dict(sandbox_cfg)
         cfg["database"] = tpl_name
@@ -505,7 +505,7 @@ def _snapshot_slot_to_template(
 
     # PG: CREATE DATABASE template TEMPLATE slot
     _pg_clone_database(sandbox_cfg, slot_db, tpl_name, manager.sandbox_executor)
-    from utils.pipeline import create_executor
+    from sandbox.db_admin import create_executor
 
     cfg = dict(sandbox_cfg)
     cfg["database"] = tpl_name
@@ -598,7 +598,7 @@ def _reinject_mysql_stats(manager, tables: List[str], info: Dict[str, Any]) -> N
 
 
 def _load_info_from_template(sandbox_cfg, dialect, tpl_name: str) -> Optional[Dict[str, Any]]:
-    from utils.pipeline import create_executor
+    from sandbox.db_admin import create_executor
 
     cfg = dict(sandbox_cfg)
     cfg["database"] = tpl_name
@@ -635,7 +635,7 @@ def _evict_if_needed(manager, dialect, sandbox_cfg, max_n: int, keep: str) -> No
     with _LRU_GUARD:
         names = list(_LRU.keys())
     # 加上实例上已有的 tpl 库
-    existing = _list_template_dbs(sandbox_cfg, dialect, sandbox_cfg.get("prefix") if False else "astratune_tpl_")
+    existing = _list_template_dbs(sandbox_cfg, dialect, "astratune_tpl_")
     for n in existing:
         if n not in names:
             names.append(n)
@@ -693,30 +693,8 @@ def _drop_database(sandbox_cfg, dialect, name: str, slot_executor=None) -> None:
     if not name or not str(name).startswith("astratune_tpl_"):
         default_logger.warning(f"拒绝删除非模板库: {name}")
         return
-    admin = _make_admin(sandbox_cfg, dialect)
-    try:
-        if dialect == "mysql":
-            admin.execute_autocommit(f"DROP DATABASE IF EXISTS {_quote_mysql(name)}")
-        else:
-            if slot_executor is not None:
-                try:
-                    cur = str((getattr(slot_executor, "config", {}) or {}).get("database") or "")
-                    if cur == name:
-                        slot_executor.close()
-                except Exception:
-                    pass
-            lit = name.replace("'", "''")
-            admin.execute_autocommit(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                f"WHERE datname = '{lit}' AND pid <> pg_backend_pid()"
-            )
-            admin.execute_autocommit(f"DROP DATABASE IF EXISTS {_quote_pg(name)}")
-        default_logger.info(f"已删除模板库: {name}")
-    finally:
-        try:
-            admin.close()
-        except Exception:
-            pass
+    _drop_db_common(sandbox_cfg, dialect, name, slot_executor, kind="模板")
+    default_logger.info(f"已删除模板库: {name}")
 
 
 def drop_slot_database(sandbox_cfg, dialect: str, name: str, slot_executor=None) -> None:
@@ -726,6 +704,17 @@ def drop_slot_database(sandbox_cfg, dialect: str, name: str, slot_executor=None)
     if not str(name).startswith("astratune_sandbox_"):
         default_logger.warning(f"拒绝删除非槽位库: {name}")
         return
+    _drop_db_common(sandbox_cfg, dialect, name, slot_executor, kind="槽位")
+    default_logger.info(f"已删除槽位库: {name}")
+
+
+def _drop_db_common(
+    sandbox_cfg, dialect, name: str, slot_executor=None, *, kind: str = ""
+) -> None:
+    """共享 DROP DATABASE 流程：MySQL 直接 DROP；PG 先终止连接再 DROP。
+
+    slot_executor 若正连着要删的库（PG）则先 close。
+    """
     admin = _make_admin(sandbox_cfg, dialect)
     try:
         if dialect == "mysql":
@@ -733,7 +722,9 @@ def drop_slot_database(sandbox_cfg, dialect: str, name: str, slot_executor=None)
         else:
             if slot_executor is not None:
                 try:
-                    slot_executor.close()
+                    cur = str((getattr(slot_executor, "config", {}) or {}).get("database") or "")
+                    if cur == name or kind == "槽位":
+                        slot_executor.close()
                 except Exception:
                     pass
             lit = name.replace("'", "''")
@@ -742,7 +733,6 @@ def drop_slot_database(sandbox_cfg, dialect: str, name: str, slot_executor=None)
                 f"WHERE datname = '{lit}' AND pid <> pg_backend_pid()"
             )
             admin.execute_autocommit(f"DROP DATABASE IF EXISTS {_quote_pg(name)}")
-        default_logger.info(f"已删除槽位库: {name}")
     finally:
         try:
             admin.close()

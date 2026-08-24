@@ -7,8 +7,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from sandbox.mysql_executor import MySQLExecutor
-from sandbox.pg_executor import PGExecutor
+from sandbox.db_admin import (
+    create_executor as db_admin_create_executor,
+    ensure_sandbox_database as db_admin_ensure_sandbox_database,
+    sandbox_db_name_for_slot as db_admin_sandbox_db_name_for_slot,
+)
 from sandbox.sandbox_manager import SandboxManager
 from utils.config_loader import (
     get_batch_config,
@@ -105,10 +108,8 @@ def filter_by_dialect(
 
 
 def create_executor(config: Dict[str, Any]):
-    dialect = normalize_dialect(config.get("dialect", "postgresql"))
-    if dialect == "mysql":
-        return MySQLExecutor(config)
-    return PGExecutor(config)
+    """按配置方言创建执行器（已下沉至 sandbox.db_admin，此处 re-export 兼容）。"""
+    return db_admin_create_executor(config)
 
 
 def sandbox_db_name_for_slot(
@@ -119,54 +120,19 @@ def sandbox_db_name_for_slot(
     batch_cfg: Optional[Dict[str, Any]] = None,
     base_database: Optional[str] = None,
 ) -> str:
-    """
-    workers==1 或 slot_index is None：沿用配置中的单库名（P0 兼容）。
-    否则：prefix + slot_index。
-    """
-    batch_cfg = batch_cfg or {}
-    base = base_database or (
-        "astratune_sandbox" if normalize_dialect(dialect) == "postgresql" else "astratune_sandbox"
+    """workers==1 或 slot_index is None：沿用配置中的单库名（P0 兼容）。否则：prefix + slot_index。"""
+    return db_admin_sandbox_db_name_for_slot(
+        dialect=dialect,
+        slot_index=slot_index,
+        workers=workers,
+        batch_cfg=batch_cfg,
+        base_database=base_database,
     )
-    if workers <= 1 or slot_index is None:
-        return base
-    prefix = batch_cfg.get("sandbox_db_prefix") or "astratune_sandbox_"
-    return f"{prefix}{int(slot_index)}"
 
 
 def ensure_sandbox_database(sandbox_cfg: Dict[str, Any], database: str) -> None:
-    """在沙箱实例上确保 database 存在（PG CREATE DATABASE / MySQL CREATE DATABASE）。"""
-    with timed_stage("sandbox_slot_ensure", database=database):
-        dialect = normalize_dialect(sandbox_cfg.get("dialect", "postgresql"))
-        admin_cfg = dict(sandbox_cfg)
-        if dialect == "postgresql":
-            admin_cfg["database"] = "postgres"
-        else:
-            admin_cfg["database"] = "mysql"
-
-        admin = create_executor(admin_cfg)
-        try:
-            admin.connect()
-            if dialect == "postgresql":
-                lit = database.replace("'", "''")
-                exists = admin.execute(
-                    f"SELECT 1 AS ok FROM pg_database WHERE datname = '{lit}'",
-                    fetch=True,
-                )
-                found = bool(exists and exists[0].get("rows"))
-                if not found:
-                    admin.execute_autocommit(f'CREATE DATABASE "{lit}"')
-                    default_logger.info(f"已创建 PG 沙箱库: {database}")
-            else:
-                lit = database.replace("`", "``")
-                admin.execute_autocommit(
-                    f"CREATE DATABASE IF NOT EXISTS `{lit}` CHARACTER SET utf8mb4"
-                )
-                default_logger.info(f"已确保 MySQL 沙箱库: {database}")
-        finally:
-            try:
-                admin.close()
-            except Exception:
-                pass
+    """在沙箱实例上确保 database 存在（已下沉至 sandbox.db_admin，此处 re-export 兼容）。"""
+    db_admin_ensure_sandbox_database(sandbox_cfg, database)
 
 
 def setup_executors(
@@ -220,7 +186,6 @@ def setup_executors(
 
 def normalize_tables_for_dialect(tables: List[str], dialect: str) -> List[str]:
     """剥 schema 前缀、去重；过滤明显系统表名。"""
-    dialect = normalize_dialect(dialect)
     out: List[str] = []
     for t in tables:
         s = (t or "").strip().strip("`").strip('"')
@@ -236,10 +201,7 @@ def normalize_tables_for_dialect(tables: List[str], dialect: str) -> List[str]:
             "dual",
         }:
             continue
-        if dialect == "mysql":
-            out.append(s)
-        else:
-            out.append(s)
+        out.append(s)
     return list(dict.fromkeys(out))
 
 
@@ -375,17 +337,13 @@ def prepare_sandbox(
     dialect: Optional[str] = None,
 ) -> Dict[str, Any]:
     manager = SandboxManager(target_executor, sandbox_executor, sandbox_cfg)
-    dialect_n = ""
     try:
-        from utils.config_loader import normalize_dialect
-
         dialect_n = normalize_dialect(
             dialect or sandbox_cfg.get("dialect") or "postgresql"
         )
     except Exception:
         dialect_n = str(dialect or sandbox_cfg.get("dialect") or "postgresql")
 
-    used_template = False
     if db_id:
         try:
             from sandbox.template_cache import prepare_with_template, template_cache_config
@@ -404,7 +362,6 @@ def prepare_sandbox(
                         dialect=dialect_n,
                         sandbox_cfg=sandbox_cfg,
                     )
-                used_template = True
                 return {"manager": manager, "info": info, "via": "template"}
         except Exception as e:
             default_logger.warning(f"模板沙箱失败，回退直接克隆: {e}")
@@ -420,7 +377,6 @@ def prepare_sandbox(
         except Exception as e:
             default_logger.warning(f"沙箱预清理警告: {e}")
         info = manager.setup_sandbox(tables)
-    _ = used_template
     return {"manager": manager, "info": info, "via": "direct"}
 
 
@@ -482,14 +438,11 @@ def make_execute_fn(executor, *, on_sql=None):
 def make_reset_fn(
     manager: SandboxManager,
     tables: List[str],
-    preprocess_sql: Optional[str] = None,
-    sandbox_executor=None,
     *,
     smart: bool = True,
     initially_dirty: bool = True,
 ):
-    """
-    返回 (reset_fn, mark_sql)。
+    """返回 (reset_fn, mark_sql)。
 
     smart=True 时：若自上次 full reset 以来未执行过可能改写数据/结构的 SQL，
     则跳过 cleanup+setup（只查询/EXPLAIN 场景大幅加速）。
@@ -521,7 +474,6 @@ def make_reset_fn(
 
         with _ts("sandbox_reset", force=int(bool(force))):
             manager.reset_sandbox(tables)
-        # 前后置由 Verify 包裹执行，此处不再跑 preprocess，避免双重 CREATE/ALTER
         state["dirty"] = False
         state["full_resets"] += 1
         default_logger.info(
@@ -539,20 +491,14 @@ def make_verify_fns(
     tables: List[str],
     sandbox_executor,
     dialect: str,
-    preprocess_sql: Optional[str] = None,
     *,
     smart_reset: bool = True,
     initially_dirty: bool = True,
 ):
-    """一次性构造 Verify 用的 reset / execute / explain。
-
-    preprocess_sql 参数保留兼容，但 reset 不再自动执行；由 Verifier 包裹。
-    """
+    """一次性构造 Verify 用的 reset / execute / explain。"""
     reset_fn, mark_sql = make_reset_fn(
         manager,
         tables,
-        preprocess_sql=None,
-        sandbox_executor=sandbox_executor,
         smart=smart_reset,
         initially_dirty=initially_dirty,
     )

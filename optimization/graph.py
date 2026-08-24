@@ -96,19 +96,19 @@ def create_optimization_graph(
         try:
             with timed_stage("generate", round=rnd):
                 cands = generate_agent.generate(
-                diagnosis_report=state.get("diagnosis_report") or "",
-                issue_sql=state.get("issue_sql") or [],
-                query=state.get("query") or "",
-                schema=state.get("schema") or "",
-                category=state.get("category") or "",
-                dialect=state.get("dialect") or "postgresql",
-                failure_reasons=state.get("failure_reasons") or [],
-                round_history=state.get("round_history") or [],
-                efficiency=state.get("efficiency"),
-                preprocess_sql=state.get("preprocess_sql") or [],
-                clean_up_sql=state.get("clean_up_sql") or [],
-                sandbox_fidelity=state.get("sandbox_fidelity") or "",
-            )
+                    diagnosis_report=state.get("diagnosis_report") or "",
+                    issue_sql=state.get("issue_sql") or [],
+                    query=state.get("query") or "",
+                    schema=state.get("schema") or "",
+                    category=state.get("category") or "",
+                    dialect=state.get("dialect") or "postgresql",
+                    failure_reasons=state.get("failure_reasons") or [],
+                    round_history=state.get("round_history") or [],
+                    efficiency=state.get("efficiency"),
+                    preprocess_sql=state.get("preprocess_sql") or [],
+                    clean_up_sql=state.get("clean_up_sql") or [],
+                    sandbox_fidelity=state.get("sandbox_fidelity") or "",
+                )
             return {
                 "round": rnd,
                 "candidates": cands,

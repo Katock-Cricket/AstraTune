@@ -1,30 +1,32 @@
+#!/usr/bin/env python3
+"""单例诊断 CLI：ReAct Agent 在沙箱上定位 SQL 问题（统一推理链路，mode=diag_only）。"""
+
+from __future__ import annotations
+
 import argparse
 import sys
-import asyncio
-sys.path.append("../")
-from sandbox.pg_executor import PGExecutor
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.config_loader import normalize_dialect
+from utils.inference_runner import run_single_instance
 from utils.logger import setup_logger
 from utils.llm import init_llm_pool
-from utils.config_loader import load_all_configs, get_diagnosis_config
-from utils.stream_handler import StreamHandler
-from sandbox.mysql_executor import MySQLExecutor
-from sandbox.sandbox_manager import SandboxManager
-from diagnosis.agent import DiagnosisAgent, extract_involved_tables
-from tools.sandbox_tool import SandboxTool
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="SQL诊断系统 - 基于LLM Agent的数据库性能诊断工具"
     )
-    
+
     parser.add_argument(
         "--sql",
         type=str,
         required=True,
         help="需要诊断的SQL语句, 多条sql用分号分隔"
     )
-    
+
     parser.add_argument(
         "--log",
         type=str,
@@ -74,269 +76,75 @@ def parse_arguments():
         default=None,
         help="日志文件路径（可选，默认只输出到控制台）"
     )
-    
+
     parser.add_argument(
         "--stream",
         action="store_true",
         default=True,
         help="启用流式输出，实时显示Agent推理过程"
     )
-    
+
     return parser.parse_args()
-
-
-def _normalize_tables_for_dialect(tables: list, dialect: str) -> list:
-    """MySQL 的 SHOW CREATE TABLE 使用单反引号包裹整段标识符，LLM 若返回 db.table 时只保留表名。"""
-    if dialect != "mysql":
-        return list(dict.fromkeys(tables))
-    out = []
-    for t in tables:
-        s = (t or "").strip()
-        if "." in s:
-            s = s.split(".")[-1].strip()
-        if s:
-            out.append(s)
-    return list(dict.fromkeys(out))
 
 
 def main():
     """主函数"""
-    # 解析参数
     args = parse_arguments()
-    
-    # 设置日志
+
     logger = setup_logger(log_file=args.log_file)
     logger.info("=" * 80)
     logger.info("SQL诊断系统启动")
     logger.info("=" * 80)
     init_llm_pool()
-        
+
     try:
-        # 1. 加载配置
-        logger.info("步骤 1/7: 加载配置文件")
-        from utils.config_loader import normalize_dialect
-
-        configs = load_all_configs()
+        logger.info("步骤 1/2: 加载配置并运行统一推理链路（diag_only）")
         dialect = normalize_dialect(args.dialect)
-        diag_config = get_diagnosis_config(configs, dialect=dialect)
-        
-        agent_config = diag_config.get("agent", {})
-        target_db_config = diag_config.get("target_db", {})
-        sandbox_config = diag_config.get("sandbox", {})
         logger.info(f"方言: {dialect}")
-        
-        if not agent_config:
-            logger.error("Agent配置为空，请检查配置文件")
-            sys.exit(1)
-        
-        if not target_db_config:
-            logger.error("Target DB配置为空，请检查配置文件")
-            sys.exit(1)
-        
-        if not sandbox_config:
-            logger.error("Sandbox配置为空，请检查配置文件")
+
+        result = run_single_instance(
+            sql=args.sql,
+            query=args.user_prompt or "",
+            category="Query",
+            dialect=dialect,
+            db_id=args.db_id,
+            preprocess_sql=args.preprocess_sql,
+            clean_up_sql=args.clean_up_sql,
+            exec_log=args.log,
+            mode="diag_only",
+            stream=bool(args.stream),
+            instance_id="diag",
+            logger=logger,
+        )
+
+        logger.info(f"识别到的表: {result.tables}")
+
+        if result.error:
+            logger.error(f"诊断执行失败: {result.error}")
             sys.exit(1)
 
-        if args.db_id:
-            target_db_config = {**target_db_config, "database": args.db_id}
-            logger.info(f"已通过 --db-id 覆盖目标库: {args.db_id}")
-        
-        logger.info("配置加载完成")
-        logger.info(f"目标数据库: {target_db_config.get('host')}:{target_db_config.get('port')}/{target_db_config.get('database')}")
-        logger.info(f"沙箱数据库: {sandbox_config.get('host')}:{sandbox_config.get('port')}/{sandbox_config.get('database')}")
-        
-        # 2. 连接目标数据库和沙箱数据库
-        logger.info("步骤 2/7: 连接数据库")
-        
-        # 创建目标数据库executor（只读）
-        target_dialect = target_db_config.get("dialect")
-        if target_dialect == "mysql":
-            target_executor = MySQLExecutor(target_db_config)
-        elif target_dialect == "postgresql":
-            target_executor = PGExecutor(target_db_config)
-        else:
-            logger.error(f"不支持的数据库类型: {target_dialect}")
-            sys.exit(1)
-        
-        try:
-            target_executor.connect()
-            logger.info("目标数据库连接成功")
-        except Exception as e:
-            logger.error(f"目标数据库连接失败: {e}")
-            sys.exit(1)
-        
-        # 创建沙箱数据库executor（读写）
-        dialect = sandbox_config.get("dialect")
-        if dialect == "mysql":
-            sandbox_executor = MySQLExecutor(sandbox_config)
-        elif dialect == "postgresql":
-            sandbox_executor = PGExecutor(sandbox_config)
-        else:
-            logger.error(f"不支持的数据库类型: {dialect}")
-            sys.exit(1)
-        
-        try:
-            sandbox_executor.connect()
-            logger.info("沙箱数据库连接成功")
-        except Exception as e:
-            logger.error(f"沙箱数据库连接失败: {e}")
-            target_executor.close()
-            sys.exit(1)
-        
-        # 3. 由 LLM 从 SQL 提取涉及表（先于沙箱与诊断）
-        logger.info("步骤 3/7: 从 SQL 中提取涉及表（LLM）")
-        llm_cfg = agent_config.get("llm", {})
-        if not llm_cfg:
-            logger.error("未配置 llm，无法自动提取表名；请使用 --tables 指定表")
-            target_executor.close()
-            sandbox_executor.close()
-            sys.exit(1)
-        try:
-            tables = extract_involved_tables(
-                args.sql, llm_cfg, user_prompt=args.user_prompt or ""
-            )
-        except Exception as e:
-            logger.error(f"从 SQL 提取表名失败: {e}")
-            target_executor.close()
-            sandbox_executor.close()
-            sys.exit(1)
-        tables = _normalize_tables_for_dialect(tables, target_dialect)
-        if not tables:
-            logger.error("未能从 SQL 中识别出任何表；请检查 SQL 或使用 --tables 手动指定")
-            target_executor.close()
-            sandbox_executor.close()
-            sys.exit(1)
-        logger.info(f"识别到的表: {tables}")
-        
-        # 4. 获取表DDL
-        logger.info("步骤 4/7: 从目标数据库获取表结构信息")
-        schema_parts = []
-        for table in tables:
-            try:
-                ddl = target_executor.get_create_table_ddl(table)
-                schema_parts.append(f"-- 表: {table}")
-                schema_parts.append(ddl)
-                schema_parts.append("")
-            except Exception as e:
-                logger.error(f"获取表 {table} 的DDL失败: {e}")
-                target_executor.close()
-                sandbox_executor.close()
-                sys.exit(1)
-        
-        schema = "\n".join(schema_parts)
-        logger.info(f"成功获取 {len(tables)} 张表的结构信息")
-        
-        # 5. 搭建沙箱环境
-        logger.info("步骤 5/7: 搭建沙箱环境（从目标数据库复制到沙箱数据库）")
-        sandbox_manager = SandboxManager(target_executor, sandbox_executor, sandbox_config)
-
-        try:
-            sandbox_manager.cleanup_sandbox()
-        except Exception as e:
-            logger.error(f"清理沙箱失败: {e}")
-        
-        try:
-            sandbox_info = sandbox_manager.setup_sandbox(tables)
-            logger.info("沙箱环境搭建成功")
-            
-            # 打印沙箱信息
-            for table_info in sandbox_info["tables"]:
-                logger.info(
-                    f"  {table_info['original']} "
-                    f"({table_info['original_rows']} 行, "
-                    f"{'采样' if table_info['is_sampled'] else '完整拷贝'})"
-                )
-        except Exception as e:
-            logger.error(f"沙箱环境搭建失败: {e}")
-            target_executor.close()
-            sandbox_executor.close()
-            sys.exit(1)
-        
-        # 6. 初始化Agent和工具
-        logger.info("步骤 6/7: 初始化Agent")
-        # Agent只使用沙箱数据库executor
-        sandbox_tool = SandboxTool(sandbox_executor)
-        sandbox_tool.bind_sandbox_reset(sandbox_manager, tables)
-        # 注册前置和清理sql（前置只在诊断前执行一次，不挂到每次工具调用）
-        if args.preprocess_sql:
-            sandbox_tool.register_preprocess_sql(args.preprocess_sql)
-            sandbox_tool.apply_preprocess_once()
-        if args.clean_up_sql:
-            sandbox_tool.register_clean_up_sql(args.clean_up_sql)
-
-        try:
-            agent = DiagnosisAgent(agent_config, sandbox_tool)
-            logger.info("Agent初始化成功")
-        except Exception as e:
-            logger.error(f"Agent初始化失败: {e}")
-            sandbox_manager.cleanup_sandbox()
-            target_executor.close()
-            sandbox_executor.close()
-            sys.exit(1)
-        
-        # 7. 执行诊断
-        logger.info("步骤 7/7: 执行诊断")
+        logger.info("步骤 2/2: 输出诊断结论")
         logger.info("-" * 80)
-        
-        try:
-            if args.stream:
-                # 流式模式：Rich显示 + Logger文件记录（如果指定了--log-file）
-                logger.info("使用流式模式执行诊断")
-                stream_handler = StreamHandler(mode="rich")
-                
-                # 异步执行流式诊断
-                conclusion = asyncio.run(agent.diagnose_stream(
-                    ori_sql=args.sql,
-                    schema=schema,
-                    exec_log=args.log,
-                    sampled_tables=sandbox_info["sampled_tables"],
-                    preprocess_sql=args.preprocess_sql,
-                    clean_up_sql=args.clean_up_sql,
-                    user_prompt=args.user_prompt,
-                    stream_handler=stream_handler
-                ))
-            else:
-                # 非流式模式：收集事件后通过Logger输出
-                logger.info("使用非流式模式执行诊断")
-                conclusion = agent.diagnose(
-                    ori_sql=args.sql,
-                    schema=schema,
-                    exec_log=args.log,
-                    sampled_tables=sandbox_info["sampled_tables"],
-                    preprocess_sql=args.preprocess_sql,
-                    clean_up_sql=args.clean_up_sql,
-                    user_prompt=args.user_prompt
-                )
-            
-            # 输出诊断结果
-            logger.info("-" * 80)
-            logger.info("诊断完成！")
-            logger.info("=" * 80)
-            
-            # 流式模式下结论已经通过Rich显示，这里只做简单总结
-            if not args.stream:
-                print("\n" + "=" * 80)
-                print("诊断结果")
-                print("=" * 80)
-                print(conclusion)
-                print("=" * 80 + "\n")
-            
-        except Exception as e:
-            logger.error(f"诊断执行失败: {e}")
-            raise
-    
-        
-        # 关闭数据库连接
-        target_executor.close()
-        sandbox_executor.close()
-        
+        logger.info("诊断完成！")
+        logger.info("=" * 80)
+
+        # 流式模式下结论已通过 Rich 实时显示，非流式模式在此打印
+        if not args.stream:
+            print("\n" + "=" * 80)
+            print("诊断结果")
+            print("=" * 80)
+            print(result.diagnosis_report)
+            print("=" * 80 + "\n")
+
         logger.info("=" * 80)
         logger.info("SQL诊断系统结束")
         logger.info("=" * 80)
-        
+
     except KeyboardInterrupt:
         logger.info("\n用户中断程序")
         sys.exit(0)
+    except SystemExit:
+        raise
     except Exception as e:
         logger.error(f"程序执行出错: {e}", exc_info=True)
         sys.exit(1)
@@ -344,4 +152,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
