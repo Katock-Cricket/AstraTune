@@ -1,6 +1,8 @@
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+import time
+from utils.timing import log_timing, sql_kind
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -45,16 +47,19 @@ class StreamHandler:
         self.llm_accumulated_text = ""
         self.tool_call_count = 0
         self.events_history: List[Dict[str, Any]] = []
+        self._llm_t0: Optional[float] = None
+        self._tool_t0: Optional[float] = None
+        self._tool_name: str = ""
         
         # 事件类型映射
         self.event_type_names = {
-            "on_chain_start": "🔗 节点开始",
-            "on_chain_end": "✅ 节点结束",
-            "on_chat_model_start": "🤖 LLM开始",
-            "on_chat_model_stream": "💬 LLM输出",
-            "on_chat_model_end": "🏁 LLM完成",
-            "on_tool_start": "🔧 工具调用开始",
-            "on_tool_end": "✔️ 工具调用完成"
+            "on_chain_start": "[节点开始]",
+            "on_chain_end": "[节点结束]",
+            "on_chat_model_start": "[LLM开始]",
+            "on_chat_model_stream": "[LLM输出]",
+            "on_chat_model_end": "[LLM完成]",
+            "on_tool_start": "[工具调用开始]",
+            "on_tool_end": "[工具调用完成]",
         }
     
     def handle_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -68,7 +73,8 @@ class StreamHandler:
             结构化事件（structured 模式），否则返回 None
         """
         event_type = event.get("event")
-        
+        self._note_timing(event)
+
         # 记录事件历史
         self.events_history.append(event)
         
@@ -197,7 +203,16 @@ class StreamHandler:
 
         elif event_type == "on_chain_end":
             if "reasoning" in event_name:
-                self.logger.info(f"{event_data.get('output', {})['messages'][-1].content}")
+                try:
+                    msgs = (event_data.get("output") or {}).get("messages") or []
+                    last = msgs[-1] if msgs else None
+                    text = getattr(last, "content", "") if last is not None else ""
+                    if isinstance(text, str) and len(text) > 800:
+                        text = text[:800] + "…"
+                    if text:
+                        self.logger.info(text)
+                except Exception:
+                    pass
             elif "force_conclusion" in event_name:
                 self.logger.info("强制结论节点结束")
         
@@ -206,12 +221,27 @@ class StreamHandler:
             tool_name = event.get("name", "unknown")
             tool_input = event_data.get("input", {})
             self.logger.info(f"工具调用 #{self.tool_call_count}: {tool_name}")
-            self.logger.info(f"{tool_input}")
+            tin = str(tool_input)
+            if len(tin) > 400:
+                tin = tin[:400] + "…"
+            self.logger.info(tin)
         
         elif event_type == "on_tool_end":
             tool_name = event.get("name", "unknown")
             self.logger.info(f"工具完成: {tool_name}")
-            self.logger.info(f"{event_data.get('output', {}).content}")
+            output = event_data.get("output", {})
+            content = None
+            if hasattr(output, "content"):
+                content = output.content
+            elif isinstance(output, dict):
+                content = output.get("content")
+            elif isinstance(output, str):
+                content = output
+            if content is not None:
+                cs = str(content)
+                if len(cs) > 500:
+                    cs = cs[:500] + "…"
+                self.logger.info(cs)
 
         
         elif event_type == "on_chat_model_end":
@@ -304,6 +334,36 @@ class StreamHandler:
         # 其他情况返回字符串
         return str(tool_input)
     
+    def _note_timing(self, event: Dict[str, Any]) -> None:
+        event_type = event.get("event")
+        event_name = event.get("name", "")
+        if event_type == "on_chat_model_start":
+            self._llm_t0 = time.perf_counter()
+        elif event_type == "on_chat_model_end" and self._llm_t0 is not None:
+            elapsed = (time.perf_counter() - self._llm_t0) * 1000.0
+            self._llm_t0 = None
+            log_timing(
+                "diagnosis_llm",
+                elapsed,
+                iter=self.current_iteration,
+                node=event_name or "-",
+            )
+        elif event_type == "on_tool_start":
+            self._tool_t0 = time.perf_counter()
+            self._tool_name = event_name or "tool"
+        elif event_type == "on_tool_end" and self._tool_t0 is not None:
+            elapsed = (time.perf_counter() - self._tool_t0) * 1000.0
+            self._tool_t0 = None
+            inp = (event.get("data") or {}).get("input") or {}
+            kind = sql_kind(inp.get("sql") or "") if isinstance(inp, dict) else "-"
+            log_timing(
+                "diagnosis_tool",
+                elapsed,
+                tool=self._tool_name or event_name or "-",
+                kind=kind,
+                n=self.tool_call_count,
+            )
+
     def get_summary(self) -> Dict[str, Any]:
         """获取处理摘要"""
         return {

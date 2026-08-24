@@ -86,6 +86,18 @@ class DBExecutor(ABC):
         """
         pass
     
+    def insert_rows(
+        self,
+        table_name: str,
+        columns: List[str],
+        rows: List[Dict[str, Any]],
+        *,
+        quote: str = '"',
+        batch_size: int = 1000,
+    ) -> int:
+        """参数化批量插入，避免字符串字面量转义与分号拆句问题。"""
+        raise NotImplementedError
+
     def __enter__(self):
         """上下文管理器入口"""
         self.connect()

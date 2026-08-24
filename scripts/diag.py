@@ -4,25 +4,25 @@ import asyncio
 sys.path.append("../")
 from sandbox.pg_executor import PGExecutor
 from utils.logger import setup_logger
+from utils.llm import init_llm_pool
 from utils.config_loader import load_all_configs, get_diagnosis_config
 from utils.stream_handler import StreamHandler
 from sandbox.mysql_executor import MySQLExecutor
 from sandbox.sandbox_manager import SandboxManager
 from diagnosis.agent import DiagnosisAgent, extract_involved_tables
 from tools.sandbox_tool import SandboxTool
-from tools.rag_tool import RAGTool
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="慢SQL诊断系统 - 基于LLM Agent的数据库性能诊断工具"
+        description="SQL诊断系统 - 基于LLM Agent的数据库性能诊断工具"
     )
     
     parser.add_argument(
         "--sql",
         type=str,
         required=True,
-        help="需要诊断的慢SQL语句, 多条sql用分号分隔"
+        help="需要诊断的SQL语句, 多条sql用分号分隔"
     )
     
     parser.add_argument(
@@ -51,6 +51,21 @@ def parse_arguments():
         type=str,
         default=None,
         help="附加用户提示"
+    )
+
+    parser.add_argument(
+        "--db-id",
+        type=str,
+        default=None,
+        help="目标数据库名（覆盖 config/target_db.json 中的 database，如 financial）"
+    )
+
+    parser.add_argument(
+        "--dialect",
+        type=str,
+        default="postgresql",
+        choices=["postgresql", "mysql", "pg", "postgres"],
+        help="数据库方言（默认 postgresql）"
     )
 
     parser.add_argument(
@@ -92,18 +107,23 @@ def main():
     # 设置日志
     logger = setup_logger(log_file=args.log_file)
     logger.info("=" * 80)
-    logger.info("慢SQL诊断系统启动")
+    logger.info("SQL诊断系统启动")
     logger.info("=" * 80)
+    init_llm_pool()
         
     try:
         # 1. 加载配置
         logger.info("步骤 1/7: 加载配置文件")
+        from utils.config_loader import normalize_dialect
+
         configs = load_all_configs()
-        diag_config = get_diagnosis_config(configs)
+        dialect = normalize_dialect(args.dialect)
+        diag_config = get_diagnosis_config(configs, dialect=dialect)
         
         agent_config = diag_config.get("agent", {})
         target_db_config = diag_config.get("target_db", {})
         sandbox_config = diag_config.get("sandbox", {})
+        logger.info(f"方言: {dialect}")
         
         if not agent_config:
             logger.error("Agent配置为空，请检查配置文件")
@@ -116,6 +136,10 @@ def main():
         if not sandbox_config:
             logger.error("Sandbox配置为空，请检查配置文件")
             sys.exit(1)
+
+        if args.db_id:
+            target_db_config = {**target_db_config, "database": args.db_id}
+            logger.info(f"已通过 --db-id 覆盖目标库: {args.db_id}")
         
         logger.info("配置加载完成")
         logger.info(f"目标数据库: {target_db_config.get('host')}:{target_db_config.get('port')}/{target_db_config.get('database')}")
@@ -168,7 +192,9 @@ def main():
             sandbox_executor.close()
             sys.exit(1)
         try:
-            tables = asyncio.run(extract_involved_tables(args.sql, llm_cfg))
+            tables = extract_involved_tables(
+                args.sql, llm_cfg, user_prompt=args.user_prompt or ""
+            )
         except Exception as e:
             logger.error(f"从 SQL 提取表名失败: {e}")
             target_executor.close()
@@ -230,16 +256,16 @@ def main():
         logger.info("步骤 6/7: 初始化Agent")
         # Agent只使用沙箱数据库executor
         sandbox_tool = SandboxTool(sandbox_executor)
-        # 注册前置和清理sql
+        sandbox_tool.bind_sandbox_reset(sandbox_manager, tables)
+        # 注册前置和清理sql（前置只在诊断前执行一次，不挂到每次工具调用）
         if args.preprocess_sql:
             sandbox_tool.register_preprocess_sql(args.preprocess_sql)
+            sandbox_tool.apply_preprocess_once()
         if args.clean_up_sql:
             sandbox_tool.register_clean_up_sql(args.clean_up_sql)
 
-        rag_tool = RAGTool() if agent_config.get("enable_rag", False) else None
-        
         try:
-            agent = DiagnosisAgent(agent_config, sandbox_tool, rag_tool)
+            agent = DiagnosisAgent(agent_config, sandbox_tool)
             logger.info("Agent初始化成功")
         except Exception as e:
             logger.error(f"Agent初始化失败: {e}")
@@ -305,7 +331,7 @@ def main():
         sandbox_executor.close()
         
         logger.info("=" * 80)
-        logger.info("慢SQL诊断系统结束")
+        logger.info("SQL诊断系统结束")
         logger.info("=" * 80)
         
     except KeyboardInterrupt:

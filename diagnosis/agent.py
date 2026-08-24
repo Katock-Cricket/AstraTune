@@ -1,11 +1,10 @@
 from typing import List, Dict, Any, Optional
 import asyncio
 import json
-import os
 import re
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from utils.llm import make_chat_openai
 from diagnosis.graph import create_diagnosis_graph
 from diagnosis.prompts import (
     create_system_prompt,
@@ -14,10 +13,14 @@ from diagnosis.prompts import (
     create_table_extraction_user_message,
     _tables_from_schema_ddl,
 )
-from tools.sandbox_tool import SandboxTool, create_sandbox_tool_function
-from tools.rag_tool import RAGTool, create_rag_tool_function
+from tools.sandbox_tool import (
+    SandboxTool,
+    create_reset_sandbox_tool_function,
+    create_sandbox_tool_function,
+)
 from utils.logger import default_logger
 from utils.stream_handler import StreamHandler
+from utils.timing import timed_stage
 
 
 def _parse_tables_from_llm_text(content: str) -> List[str]:
@@ -37,46 +40,64 @@ def _parse_tables_from_llm_text(content: str) -> List[str]:
     return []
 
 
-async def extract_involved_tables(sql: str, llm_config: dict) -> List[str]:
+def extract_involved_tables(
+    sql: str,
+    llm_config: dict,
+    user_prompt: str = "",
+) -> List[str]:
     """
-    第一步：仅用 LLM 从 SQL 中提取涉及的物理表名（不调用沙箱工具）。
+    第一步：用 LLM 从 SQL + 用户问题描述中提取涉及的物理表名（不调用沙箱工具）。
+
+    使用同步 invoke，避免 scripts 里 asyncio.run(抽表) 后再 asyncio.run(诊断)
+    在 Windows 上触发 Event loop is closed → Connection error。
     """
-    llm = ChatOpenAI(
-        base_url=llm_config.get("base_url"),
-        model=llm_config.get("model"),
-        api_key=llm_config.get("api_key") or os.environ.get("OPENAI_API_KEY"),
-        temperature=0,
-    )
+    llm = make_chat_openai(llm_config, temperature=0)
     system = create_table_extraction_system_prompt()
-    human = create_table_extraction_user_message(sql)
-    resp = await llm.ainvoke(
-        [SystemMessage(content=system), HumanMessage(content=human)]
-    )
+    human = create_table_extraction_user_message(sql, user_prompt=user_prompt or "")
+    with timed_stage("extract_tables_llm"):
+        resp = llm.invoke(
+            [SystemMessage(content=system), HumanMessage(content=human)]
+        )
+    content = resp.content if resp and isinstance(resp.content, str) else ""
+    tables = _parse_tables_from_llm_text(content)
+    return tables
+
+
+async def extract_involved_tables_async(
+    sql: str,
+    llm_config: dict,
+    user_prompt: str = "",
+) -> List[str]:
+    """异步版抽表；仅在已有 running loop 内使用，勿再包一层 asyncio.run。"""
+    llm = make_chat_openai(llm_config, temperature=0)
+    system = create_table_extraction_system_prompt()
+    human = create_table_extraction_user_message(sql, user_prompt=user_prompt or "")
+    with timed_stage("extract_tables_llm"):
+        resp = await llm.ainvoke(
+            [SystemMessage(content=system), HumanMessage(content=human)]
+        )
     content = resp.content if resp and isinstance(resp.content, str) else ""
     tables = _parse_tables_from_llm_text(content)
     return tables
 
 
 class DiagnosisAgent:
-    """慢SQL诊断Agent"""
+    """SQL诊断Agent"""
     
-    def __init__(self, config: Dict[str, Any], sandbox_tool: SandboxTool = None, rag_tool: RAGTool = None):
+    def __init__(self, config: Dict[str, Any], sandbox_tool: SandboxTool = None):
         """
         初始化DiagnosisAgent实例
         
         Args:
             config: Agent配置，包含LLM配置和其他参数
             sandbox_tool: 沙箱工具实例
-            rag_tool: RAG工具实例（可选）
         """
         self.config = config
         self.sandbox_tool = sandbox_tool
-        self.rag_tool = rag_tool
         
         # 获取配置参数
         self.llm_config = config.get("llm", {})
         self.max_iter = config.get("max_iter", 10)
-        self.enable_rag = config.get("enable_rag", False)
         self.enable_test = config.get("enable_test", False)
         
         # 创建工具列表
@@ -88,23 +109,23 @@ class DiagnosisAgent:
             tools=self.tools
             )
         
-        default_logger.info(f"DiagnosisAgent初始化完成 - 最大迭代次数: {self.max_iter}, RAG: {self.enable_rag}, 沙箱测试: {self.enable_test}")
+        default_logger.info(f"DiagnosisAgent初始化完成 - 最大迭代次数: {self.max_iter}, 沙箱测试: {self.enable_test}")
     
     def _create_tools(self) -> list:
         """创建Agent可用的工具列表"""
         tools = []
         
         # 沙箱执行工具
-        if self.enable_test:
+        if self.enable_test and self.sandbox_tool:
             execute_sql_func = create_sandbox_tool_function(self.sandbox_tool)
             tools.append(tool(execute_sql_func))
+            if getattr(self.sandbox_tool, "_manager", None) and getattr(
+                self.sandbox_tool, "_sandbox_tables", None
+            ):
+                reset_fn = create_reset_sandbox_tool_function(self.sandbox_tool)
+                tools.append(tool(reset_fn))
+                default_logger.info("已启用沙箱 reset 工具")
             default_logger.info("已启用沙箱测试工具")
-        
-        # RAG检索工具
-        if self.enable_rag:
-            rag_func = create_rag_tool_function(self.rag_tool)
-            tools.append(tool(rag_func))
-            default_logger.info("已启用RAG检索工具")
         
         return tools
     
@@ -117,17 +138,18 @@ class DiagnosisAgent:
         preprocess_sql: str = None,
         clean_up_sql: str = None,
         user_prompt: str = None,
+        sandbox_fidelity: str = None,
         stream_handler: Optional[StreamHandler] = None
     ) -> str:
         """
-        流式执行慢SQL诊断（异步）
+        流式执行SQL诊断（异步）
         
         使用 astream_events(version="v2") 捕获完整的推理过程
         通过 stream_handler 实时显示（Rich美化）
         同时通过 logger 记录到文件（如果指定了 --log-file）
         
         Args:
-            ori_sql: 原始慢SQL语句
+            ori_sql: 原始问题SQL语句
             schema: 相关表的schema信息（DDL语句），须含 `-- 表: name` 行
             exec_log: 执行日志（包含平均执行时间、执行次数等）
             sampled_tables: 采样表列表（可选）
@@ -154,7 +176,7 @@ class DiagnosisAgent:
             
         try:
             # 创建系统提示
-            system_prompt = create_system_prompt(enable_test=self.enable_test, enable_rag=self.enable_rag)
+            system_prompt = create_system_prompt(enable_test=self.enable_test)
             
             # 创建初始消息
             initial_message = create_initial_message(
@@ -164,7 +186,8 @@ class DiagnosisAgent:
                 sampled_tables=sampled_tables,
                 preprocess_sql=preprocess_sql,
                 clean_up_sql=clean_up_sql,
-                user_prompt=user_prompt
+                user_prompt=user_prompt,
+                sandbox_fidelity=sandbox_fidelity,
             )
             
             # 构建初始状态
@@ -180,19 +203,18 @@ class DiagnosisAgent:
             
             conclusion = ""
             final_state = None
-            
-            async for event in self.graph.astream_events(initial_state, version="v2"):
-                # 通过 stream_handler 处理事件
-                if stream_handler:
-                    stream_handler.handle_event(event)
-                
-                # 提取最终状态（从 on_chain_end 事件）
-                if event.get("event") == "on_chain_end":
-                    event_data = event.get("data", {})
-                    output = event_data.get("output", {})
-                    if isinstance(output, dict) and "conclusion" in output:
-                        conclusion = output.get("conclusion", "")
-                        final_state = output
+
+            with timed_stage("diagnosis_total"):
+                async for event in self.graph.astream_events(initial_state, version="v2"):
+                    if stream_handler:
+                        stream_handler.handle_event(event)
+
+                    if event.get("event") == "on_chain_end":
+                        event_data = event.get("data", {})
+                        output = event_data.get("output", {})
+                        if isinstance(output, dict) and "conclusion" in output:
+                            conclusion = output.get("conclusion", "")
+                            final_state = output
             
             # 如果没有从事件中提取到结论，则使用最后一条消息作为结论
             if not conclusion and final_state:
@@ -226,13 +248,14 @@ class DiagnosisAgent:
         sampled_tables: List[str] = None,
         preprocess_sql: str = None,
         clean_up_sql: str = None,
-        user_prompt: str = None
+        user_prompt: str = None,
+        sandbox_fidelity: str = None,
     ) -> str:
         """
-        执行慢SQL诊断（同步包装器，保持向后兼容）
+        执行SQL诊断（同步包装器，保持向后兼容）
         
         Args:
-            ori_sql: 原始慢SQL语句
+            ori_sql: 原始问题SQL语句
             schema: 相关表的schema信息（DDL语句），须含 `-- 表: name` 行
             exec_log: 执行日志（包含平均执行时间、执行次数等）
             sampled_tables: 采样表列表（可选）
@@ -255,6 +278,7 @@ class DiagnosisAgent:
             preprocess_sql=preprocess_sql,
             clean_up_sql=clean_up_sql,
             user_prompt=user_prompt,
+            sandbox_fidelity=sandbox_fidelity,
             stream_handler=stream_handler
         ))
 

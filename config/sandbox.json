@@ -1,4 +1,35 @@
 {
+  "postgresql": {
+    "dialect": "postgresql",
+    "host": "127.0.0.1",
+    "port": 5433,
+    "user": "postgres",
+    "password": "astratune_sandbox",
+    "database": "astratune_sandbox",
+    "copy_thr": 20000,
+    "sample_size": 20000,
+    "sampling_strategy": "random",
+    "sampling_params": {
+      "time_column": "created_at"
+    },
+    "batch_size": 2000,
+    "statement_timeout_ms": 30000
+  },
+  "mysql": {
+    "dialect": "mysql",
+    "host": "127.0.0.1",
+    "port": 3307,
+    "user": "root",
+    "password": "astratune_sandbox",
+    "database": "astratune_sandbox",
+    "copy_thr": 20000,
+    "sample_size": 20000,
+    "sampling_strategy": "random",
+    "sampling_params": {
+      "time_column": "created_at"
+    },
+    "batch_size": 2000
+  },
   "diagnosis": {
     "dialect": "postgresql",
     "host": "127.0.0.1",
@@ -6,12 +37,18 @@
     "user": "postgres",
     "password": "astratune_sandbox",
     "database": "astratune_sandbox",
-    "copy_thr": 10000,
-    "sample_size": 10000,
+    "copy_thr": 20000,
+    "sample_size": 20000,
     "sampling_strategy": "random",
     "sampling_params": {
       "time_column": "created_at"
     },
-    "batch_size": 1000
+    "batch_size": 2000,
+    "statement_timeout_ms": 30000
+  },
+  "template_cache": {
+    "enabled": true,
+    "max_templates": 8,
+    "prefix": "astratune_tpl_"
   }
 }
