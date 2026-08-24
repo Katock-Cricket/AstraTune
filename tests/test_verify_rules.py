@@ -31,6 +31,13 @@ from optimization.verify import (
     table_count_uses_count_column,
     upsert_operation_type_mismatch,
 )
+from optimization.rules.base import RuleContext
+from optimization.rules.spec_rules import (
+    spec_output_columns_missing,
+    spec_predicate_required,
+    spec_unresolved_filter_risk,
+)
+from optimization.intent_spec import AggFilter, IntentSpec, OutputColumn
 
 SCHEMA = """
 -- 表: customers
@@ -252,6 +259,66 @@ def test_efficiency_merge_notin():
     assert efficiency_merge_notin(q, bad) is not None
     good = ["SELECT * FROM a WHERE x NOT IN (SELECT x FROM b UNION SELECT y FROM c)"]
     assert efficiency_merge_notin(q, good) is None
+
+
+# ---------- Spec 规则 ----------
+
+def _ctx(**kw):
+    base = dict(
+        dialect="postgresql",
+        category="Query",
+        category_lower="query",
+        is_efficiency=False,
+        query="",
+        schema="",
+        pred_sqls=[],
+        preprocess_sql=[],
+        rows=None,
+        intent_spec=None,
+    )
+    base.update(kw)
+    return RuleContext(**base)
+
+
+def test_spec_output_columns_missing():
+    spec = IntentSpec(output_columns=[OutputColumn(name="answered")])
+    msg = spec_output_columns_missing(_ctx(pred_sqls=["SELECT id FROM users"], intent_spec=spec))
+    assert msg and "answered" in msg
+
+
+def test_spec_output_columns_pass():
+    spec = IntentSpec(output_columns=[OutputColumn(name="answered")])
+    assert spec_output_columns_missing(
+        _ctx(pred_sqls=["SELECT answered FROM users"], intent_spec=spec)
+    ) is None
+
+
+def test_spec_predicate_required():
+    spec = IntentSpec(must_predicates=["only if premium"])
+    msg = spec_predicate_required(_ctx(pred_sqls=["SELECT COUNT(*) FROM users"], intent_spec=spec))
+    assert msg and "WHERE" in msg or "FILTER" in msg or "条件" in msg
+
+
+def test_spec_mgmt_artifacts_trigger():
+    from optimization.rules.spec_rules import spec_mgmt_artifacts
+    spec = IntentSpec(goal="mgmt", mgmt_artifacts=["function", "trigger"])
+    ctx = _ctx(
+        category="Management",
+        category_lower="management",
+        query="create a trigger that fires automatically when a new row is inserted",
+        pred_sqls=["CREATE FUNCTION f() RETURNS trigger AS $$ BEGIN RETURN NEW; END $$ LANGUAGE plpgsql;"],
+        intent_spec=spec,
+    )
+    msg = spec_mgmt_artifacts(ctx)
+    assert msg and "TRIGGER" in msg.upper()
+
+
+def test_spec_unresolved_filter_risk():
+    spec = IntentSpec(agg_filters=[AggFilter(text="premium", unresolved=True)])
+    msg = spec_unresolved_filter_risk(
+        _ctx(pred_sqls=["SELECT COUNT(*) FILTER (WHERE x=1) FROM users"], intent_spec=spec)
+    )
+    assert msg and "evidence" in msg.lower() or "FILTER" in msg
 
 
 if __name__ == "__main__":

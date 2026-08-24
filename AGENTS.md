@@ -52,7 +52,10 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | ---- | ---- |
 | `diagnosis/` | 诊断 Agent（LangGraph ReAct），入口 `scripts/diag.py` |
 | `optimization/` | Generate–Verify（无 Reflect），单例入口 `scripts/opt.py` |
-| `optimization/rules/` | Verify 否决规则注册表（common / category / **flash_overfit 单题规则，换题集需重估**） |
+| `optimization/rules/` | Verify 否决规则注册表（common / category / **spec** / flash_overfit 单题规则） |
+| `optimization/intent_spec.py` | Intent Spec 抽取与解析 |
+| `optimization/consensus.py` | 多候选共识分簇与早停门禁 |
+| `optimization/eff_risk.py` | Efficiency 采样外推 Timeout 风险 |
 | `utils/inference_runner.py` | **统一单条推理链路**（`run_single_instance`；diag/opt/infer/批跑 run_one 四入口共用） |
 | `scripts/infer.py` | 单例端到端：诊断 → 优化 → `pred_sqls` |
 | `scripts/run_bird_critic.py` | BIRD 批量推理编排（默认 subprocess 隔离） |
@@ -70,6 +73,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | `docs/环境搭建.md` | 跨平台启动 |
 | `docs/spec_acc.md` | **准确率规格（Flash ≥50% 已达标；val28 ≥60% 已过）** |
 | `docs/flash200评测报告.md` | **Flash 200 官方评测（51.00%）** |
+| `docs/flash200优化方案.md` | Flash 失败纵向分析与算法优化（少 prompt 过拟合） |
 | `docs/flash_val28评测报告.md` | val28 官方评测（71.43%） |
 | `docs/flash_hard40评测报告.md` | hard40 官方评测（60.00%） |
 | `docs/架构说明书.md` | **模块实现与机制（权威）** |
@@ -79,8 +83,8 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 
 - **P0 / P1**：已完成（Generate–Verify、Flash 全链路工程、并发/对齐/消融）
 - **准确率**：**Flash 200 51.00%（102/200）已过 ≥50%**；val28 71.43% 已过 ≥60% — 见 `docs/flash200评测报告.md`
-- **后续**：Query/Pers 断言失败聚类；val28 全量漂移题；PG/Open-MySQL 全量延后
-- **P2**：WebUI、compose 彻底统一
+- **后续**：按 `docs/flash200优化方案.md` 做机制层增益；val28 漂移题；PG/Open-MySQL 全量延后
+- **P2**：WebUI（AstraTune 与 BIRD evaluation 两套 Docker **保持独立**，不合并）
 
 ## 约定
 
@@ -90,7 +94,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 - 诊断结论标记：`【诊断结论】`；评测交付字段：`pred_sqls`（`list[str]`）。
 - LLM：`config/agents.json` + **`OPENAI_API_KEY` / `OPENAI_API_KEYS`**（`;` 分隔）；当前 `llm_key_mode=auto`，`llm_workers=4`。批跑沙箱 `--workers` 与 LLM 池独立。默认 `--isolate subprocess`。
 - 单条示例见 `data/测试数据.md`；`--db-id` 可覆盖目标库名。
-- **改规则/纯函数先补特征测试再动手**：`tests/`（142 用例，`pytest tests/ -q`，无需 DB）；`optimization/rules/flash_overfit.py` 为单题过拟合规则，仅对 Flash 子集有效，换题集/方言需重估，勿当通用规则扩展。
+- **改规则/纯函数先补特征测试再动手**：`tests/`（**165** 用例，`pytest tests/ -q`，无需 DB）；新机制进独立模块（`intent_spec` / `consensus` / `spec_rules` / `eff_risk`），**勿**往 `verify.py` / `prompts.py` 堆 patch；`flash_overfit.py` **冻结新增**
 - 单条推理改动统一改 `utils/inference_runner.py`；四个 CLI（diag/opt/infer/run_one）只是薄壳，勿在壳里加逻辑。
 
 ## 环境速查

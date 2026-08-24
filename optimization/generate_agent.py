@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from optimization.prompts import GENERATE_SYSTEM_PROMPT, build_generate_user_message
+from optimization.strategy_slots import enforce_strategy_slots
 from optimization.types import Candidate
+from optimization.intent_spec import IntentSpec, empty_intent_spec
 from utils.llm import extract_message_text, make_chat_openai
 from utils.logger import default_logger
 from utils.timing import timed_stage
@@ -76,7 +78,9 @@ class GenerateAgent:
         preprocess_sql: Optional[List[str] | str] = None,
         clean_up_sql: Optional[List[str] | str] = None,
         sandbox_fidelity: str = "",
+        intent_spec: Optional[IntentSpec] = None,
     ) -> List[Candidate]:
+        spec = intent_spec or empty_intent_spec()
         user_msg = build_generate_user_message(
             diagnosis_report=diagnosis_report,
             issue_sql=issue_sql,
@@ -91,6 +95,7 @@ class GenerateAgent:
             preprocess_sql=preprocess_sql,
             clean_up_sql=clean_up_sql,
             sandbox_fidelity=sandbox_fidelity,
+            intent_spec_json=spec.render_for_prompt(),
         )
         with timed_stage("generate_llm", round_hint="generate"):
             resp = self.llm.invoke(
@@ -130,5 +135,9 @@ class GenerateAgent:
         if not candidates:
             raise ValueError("Generate 候选全部无效（无 pred_sqls）")
 
-        # 截到配置数量，至少保留解析到的
+        candidates = enforce_strategy_slots(
+            candidates,
+            category=category,
+            efficiency=efficiency,
+        )
         return candidates[: self.num_candidates] if len(candidates) > self.num_candidates else candidates

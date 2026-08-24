@@ -19,7 +19,11 @@ def main() -> None:
         sys.stderr.write("worker: 缺少 payload 参数\n")
         sys.exit(2)
 
-    payload = json.loads(sys.argv[1])
+    arg = sys.argv[1]
+    if arg.startswith("@"):
+        payload = json.loads(Path(arg[1:]).read_text(encoding="utf-8"))
+    else:
+        payload = json.loads(arg)
     from utils.batch_records import slim_output_record
     from utils.config_loader import get_batch_config, load_all_configs
     from utils.llm import batch_llm_pool_options, init_llm_pool

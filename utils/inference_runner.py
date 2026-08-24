@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from diagnosis.agent import DiagnosisAgent, extract_involved_tables
 from optimization.graph import run_optimization
+from optimization.intent_spec import extract_intent_spec
 from tools.sandbox_tool import SandboxTool
 from utils.config_loader import load_all_configs
 from utils.diag_extract import extract_pred_sqls_from_diagnosis
@@ -102,6 +103,7 @@ def run_single_instance(
     def _finalize_meta_success(success: bool, rounds: int, fallback: bool,
                                 failure_reasons: List[str]) -> None:
         result.pred_sqls = list(result.pred_sqls or [])
+        spec_summary = result.meta.get("intent_spec")
         result.meta = {
             "success": success,
             "rounds": rounds,
@@ -109,6 +111,8 @@ def run_single_instance(
             "mode": mode,
             "failure_reasons": list(failure_reasons or []),
         }
+        if spec_summary is not None:
+            result.meta["intent_spec"] = spec_summary
 
     try:
         if isinstance(sql, list):
@@ -232,6 +236,18 @@ def run_single_instance(
                 diagnosis_report = f"跳过诊断。用户问题: {query or '(无)'}"
         result.diagnosis_report = diagnosis_report
 
+        intent_spec = extract_intent_spec(
+            query=query or "",
+            category=category,
+            diagnosis_report=diagnosis_report,
+            schema=schema,
+            dialect=dialect,
+            efficiency=efficiency if isinstance(efficiency, bool) else None,
+            llm_config=(opt_cfg.get("llm") or {}),
+            use_llm=mode != "diag_only",
+        )
+        result.meta["intent_spec"] = intent_spec.summary()
+
         # ---- 仅诊断：从报告抽取 pred_sqls ----
         if mode == "diag_only":
             pred, used_fb = extract_pred_sqls_from_diagnosis(
@@ -270,6 +286,8 @@ def run_single_instance(
             clean_up_sql=clean_up_sql or None,
             sandbox_fidelity=fidelity_text,
             sampled_tables=list(sandbox_info.get("sampled_tables") or []),
+            intent_spec=intent_spec,
+            sandbox_fidelity_dict=fidelity if isinstance(fidelity, dict) else None,
             opt_config=opt_cfg,
             reset_fn=reset_fn,
             execute_fn=execute_fn,

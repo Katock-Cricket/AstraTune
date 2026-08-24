@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from optimization.graph import create_optimization_graph
+from optimization.intent_spec import IntentSpec, OutputColumn
 from optimization.types import Candidate, CandidateVerifyResult, VerifyReport
 
 
@@ -15,10 +16,10 @@ def _cand(cid, sql):
     return Candidate(id=cid, pred_sqls=[sql], rationale="")
 
 
-def _cvr(cid, passed, errors=None):
+def _cvr(cid, passed, errors=None, rows=None):
     return CandidateVerifyResult(
         id=cid, passed=passed, soft_ex="skipped", cost=None,
-        latency_ms=None, errors=list(errors or []), rank_key=0.0,
+        latency_ms=None, errors=list(errors or []), rank_key=0.0, rows=rows,
     )
 
 
@@ -63,6 +64,7 @@ def _init(**extra):
         "diagnosis_report": "d", "issue_sql": ["SELECT 1"], "query": "q",
         "schema": "s", "category": "Query", "dialect": "postgresql",
         "success": False, "fallback": False, "error": None,
+        "intent_spec": IntentSpec(goal="query", output_columns=[OutputColumn(name="x")]),
     }
     base.update(extra)
     return base
@@ -194,6 +196,41 @@ def test_retry_next_round_on_veto():
     assert final["pred_sqls"] == ["SELECT v2"]
     assert ver.calls == 2
     assert len(final["round_history"]) == 2
+
+
+def test_consensus_blocks_first_round_pass():
+    """结果分裂时共识门禁拦截早停，触发第二轮 generate。"""
+    c1 = _cand("c1", "SELECT 1")
+    c2 = _cand("c2", "SELECT 2")
+    r1 = VerifyReport(
+        passed=True,
+        best=c1,
+        relative_best=c1,
+        per_candidate=[
+            _cvr("c1", True, rows=[(1,)]),
+            _cvr("c2", True, rows=[(2,)]),
+        ],
+    )
+    r2 = VerifyReport(
+        passed=True,
+        best=c2,
+        relative_best=c2,
+        per_candidate=[_cvr("c2", True, rows=[(2,)])],
+    )
+    gen = FakeGenerate([c1, c2])
+    ver = FakeVerifier([r1, r2])
+    g = create_optimization_graph(
+        generate_agent=gen,
+        verifier=ver,
+        max_rounds=2,
+        verify_agent=None,
+        verify_mode="rules_only",
+    )
+    spec = IntentSpec(goal="query", output_columns=[OutputColumn(name="v")])
+    final = g.invoke(_init(intent_spec=spec))
+    assert final["success"] is True
+    assert ver.calls == 2
+    assert gen.calls == 2
 
 
 if __name__ == "__main__":

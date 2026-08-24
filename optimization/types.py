@@ -22,6 +22,7 @@ class CandidateVerifyResult:
     latency_ms: Optional[float] = None
     errors: List[str] = field(default_factory=list)
     rank_key: float = float("inf")
+    rows: Optional[List[Any]] = None  # 候选 SELECT 结果（共识分簇用）
 
 
 @dataclass

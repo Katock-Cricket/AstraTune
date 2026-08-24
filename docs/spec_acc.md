@@ -77,7 +77,7 @@ python scripts/run_official_eval.py \
 
 | 类 | 方向 | 代表 |
 |----|------|------|
-| Query / Pers | 断言失败聚类（机制层） | 见 `data/flash200_fail_ids.txt` |
+| Query / Pers | 断言失败 → 算法优化（少 prompt 注入） | 见 `docs/flash200优化方案.md`；`data/flash200_fail_ids.txt` |
 | val28 漂移 | 全量相对子集退化 | 5, 55, 68, 129 |
 | Efficiency | 全量超时 | 62 |
 | 延后 | PG 530 / Open-MySQL | — |

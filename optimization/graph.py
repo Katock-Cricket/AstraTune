@@ -4,7 +4,9 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from optimization.consensus import should_block_early_stop
 from optimization.generate_agent import GenerateAgent
+from optimization.intent_spec import IntentSpec, empty_intent_spec
 from optimization.types import Candidate, OptimizationResult, VerifyReport
 from optimization.verify import Verifier, build_failure_reasons
 from utils.logger import default_logger
@@ -29,6 +31,7 @@ class OptState(TypedDict, total=False):
     preprocess_sql: List[str]
     clean_up_sql: List[str]
     sandbox_fidelity: str
+    intent_spec: IntentSpec
     success: bool
     fallback: bool
     error: Optional[str]
@@ -108,6 +111,7 @@ def create_optimization_graph(
                     preprocess_sql=state.get("preprocess_sql") or [],
                     clean_up_sql=state.get("clean_up_sql") or [],
                     sandbox_fidelity=state.get("sandbox_fidelity") or "",
+                    intent_spec=state.get("intent_spec") or empty_intent_spec(),
                 )
             return {
                 "round": rnd,
@@ -220,6 +224,25 @@ def create_optimization_graph(
 
         reasons = build_failure_reasons(report)
         if report.passed and report.best:
+            block, block_msg = should_block_early_stop(
+                round_num=int(state.get("round") or 0),
+                intent_spec=state.get("intent_spec"),
+                report=report,
+                num_candidates=len(cands),
+            )
+            if block:
+                default_logger.info(
+                    f"[Generate–Verify] 共识门禁拦截早停: {block_msg}"
+                )
+                report.passed = False
+                report.best = None
+                reasons = list(dict.fromkeys(reasons + [block_msg]))
+                return {
+                    "verify_report": report,
+                    "failure_reasons": reasons,
+                    "round_history": hist,
+                    "success": False,
+                }
             default_logger.info(
                 f"[Generate–Verify] 通过候选={report.best.id} "
                 f"failure_reasons 清空"
@@ -341,6 +364,8 @@ def run_optimization(
     clean_up_sql: Any = None,
     sandbox_fidelity: str = "",
     sampled_tables: Optional[List[str]] = None,
+    intent_spec: Optional[IntentSpec] = None,
+    sandbox_fidelity_dict: Optional[Dict[str, Any]] = None,
     reset_fn: Optional[Callable[[], None]] = None,
     execute_fn: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
     explain_fn: Optional[Callable[[str], Any]] = None,
@@ -353,6 +378,11 @@ def run_optimization(
         "mode=采样" in (sandbox_fidelity or "") or "mode=采样(" in (sandbox_fidelity or "")
     )
     qep_hard_gate = not sampled
+
+    from optimization.eff_risk import compute_scale_factor
+
+    scale_factor = compute_scale_factor(sandbox_fidelity_dict)
+    spec = intent_spec or empty_intent_spec()
 
     generate_agent = GenerateAgent(cfg)
     verifier = Verifier(
@@ -368,6 +398,8 @@ def run_optimization(
         query=query or "",
         schema=schema or "",
         qep_hard_gate=qep_hard_gate,
+        intent_spec=spec,
+        scale_factor=scale_factor,
     )
 
     verify_agent = None
@@ -408,6 +440,7 @@ def run_optimization(
         "preprocess_sql": pre_list,
         "clean_up_sql": cu_list,
         "sandbox_fidelity": sandbox_fidelity or "",
+        "intent_spec": spec,
         "success": False,
         "fallback": False,
         "error": None,

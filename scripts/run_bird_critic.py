@@ -209,26 +209,41 @@ def _run_one_subprocess(
     blob = json.dumps(payload, ensure_ascii=False)
 
     worker_path = str(Path(__file__).resolve().parent / "run_bird_worker.py")
+    payload_arg = blob
+    payload_file: Optional[str] = None
+    # Windows 命令行长度上限约 8k；大题面（如 card_games）走临时文件
+    if len(blob) > 6000:
+        fd, payload_file = tempfile.mkstemp(suffix=".json", prefix="bird_worker_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(blob)
+        payload_arg = f"@{payload_file}"
     try:
-        proc = subprocess.Popen(
-            [sys.executable, worker_path, blob],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(Path(__file__).resolve().parent.parent),
-        )
-    except Exception as e:
-        logger.error(f"启动 worker 失败 {iid}: {e}")
-        return _timeout_row(record, f"worker spawn 失败: {e}", mode=mode, prior_pred=prior_pred)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, worker_path, payload_arg],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+        except Exception as e:
+            logger.error(f"启动 worker 失败 {iid}: {e}")
+            return _timeout_row(record, f"worker spawn 失败: {e}", mode=mode, prior_pred=prior_pred)
 
-    try:
-        out, err = proc.communicate(timeout=timeout_s if timeout_s > 0 else None)
-    except subprocess.TimeoutExpired:
-        _kill_proc_tree(proc)
-        logger.warning(f"子进程超时 {iid} ({timeout_s}s)，强杀")
-        return _timeout_row(record, f"子进程超时 ({timeout_s}s)", mode=mode, prior_pred=prior_pred)
+        try:
+            out, err = proc.communicate(timeout=timeout_s if timeout_s > 0 else None)
+        except subprocess.TimeoutExpired:
+            _kill_proc_tree(proc)
+            logger.warning(f"子进程超时 {iid} ({timeout_s}s)，强杀")
+            return _timeout_row(record, f"子进程超时 ({timeout_s}s)", mode=mode, prior_pred=prior_pred)
+    finally:
+        if payload_file:
+            try:
+                os.unlink(payload_file)
+            except OSError:
+                pass
 
     if proc.returncode != 0:
         tail = (err or "")[-1500:]

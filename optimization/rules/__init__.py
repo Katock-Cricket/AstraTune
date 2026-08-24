@@ -33,6 +33,7 @@ from optimization.rules.common import (
     pg_delete_update_limit,
     query_output_example_mismatch,
 )
+from optimization.rules.spec_rules import SPEC_RULES
 from optimization.rules.flash_overfit import (
     FLASH_OVERFIT_RULES,
     circular_fk_chicken_egg,
@@ -69,17 +70,23 @@ __all__ = [
     "upsert_operation_type_mismatch",
     "CATEGORY_RULES",
     "COMMON_RULES",
+    "SPEC_RULES",
     "FLASH_OVERFIT_RULES",
 ]
 
 
-# 注册顺序 = 原 _verify_candidates_body 内的执行顺序（保证 errors/failure_reasons 顺序不变）
+# 注册顺序 = 原 _verify_candidates_body 内的执行顺序 + spec 规则（common 之后、flash_overfit 之前）
 _BY_ID: Dict[str, Rule] = {
-    r.id: r for r in COMMON_RULES + CATEGORY_RULES + FLASH_OVERFIT_RULES
+    r.id: r for r in COMMON_RULES + CATEGORY_RULES + SPEC_RULES + FLASH_OVERFIT_RULES
 }
 _EXECUTION_ORDER = [
     "missing_intent_tables",            # query / personalization
     "personalization_group_key_only",   # personalization
+    "spec_output_columns_missing",      # spec（全类目，空 Spec 跳过）
+    "spec_predicate_required",
+    "spec_unresolved_filter_risk",
+    "spec_pers_full_row",               # personalization
+    "spec_mgmt_artifacts",              # management
     "query_time_format_mismatch",       # query（flash 单题）
     "conditional_count_without_filter", # query
     "table_count_uses_count_column",    # query（flash 单题）

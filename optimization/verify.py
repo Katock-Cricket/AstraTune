@@ -120,6 +120,12 @@ def _is_selectish(sql: str) -> bool:
 
 # 规则函数体已迁移至 optimization/rules/（common / category / flash_overfit），
 # 此处再导出以保持 from optimization.verify import <fn> 的向后兼容（含 tests/test_verify_rules.py）。
+from optimization.intent_spec import IntentSpec
+from optimization.eff_risk import (
+    compute_scale_factor,
+    estimate_full_timeout_risk,
+    qep_structure_allows_cost_regression,
+)
 from optimization.rules import (  # noqa: E402
     RuleContext,
     circular_fk_chicken_egg,
@@ -150,33 +156,6 @@ def is_efficiency_case(category: str = "", efficiency: Optional[bool] = None) ->
     if efficiency is True:
         return True
     return (category or "").strip().lower() == "efficiency"
-    """用户问题点名且 schema 存在的表，若 pred 未引用则视为意图偏离（Query/Pers 硬约束）。"""
-    if not (query or "").strip():
-        return []
-    try:
-        from utils.pipeline import (
-            schema_tables_mentioned_in_text,
-            tables_from_schema_text,
-        )
-    except Exception:
-        return []
-    required = schema_tables_mentioned_in_text(
-        query, tables_from_schema_text(schema or "")
-    )
-    if not required:
-        return []
-    blob = "\n".join(str(s) for s in (pred_sqls or [])).lower()
-    missing: List[str] = []
-    for name in required:
-        tl = name.lower()
-        # 要求作为标识符出现：引号包裹，或紧跟 FROM/JOIN/INTO/UPDATE/TABLE
-        pat = (
-            rf'(?:"{re.escape(tl)}"|`{re.escape(tl)}`|'
-            rf"\b(?:from|join|into|update|table)\s+{re.escape(tl)}\b)"
-        )
-        if not re.search(pat, blob, flags=re.IGNORECASE):
-            missing.append(name)
-    return missing
 
 
 _CREATE_TABLE_RE = re.compile(
@@ -184,13 +163,6 @@ _CREATE_TABLE_RE = re.compile(
     r'(?:ONLY\s+)?([`"]?[A-Za-z_][\w.]*[`"]?)',
     re.IGNORECASE,
 )
-
-
-def is_efficiency_case(category: str = "", efficiency: Optional[bool] = None) -> bool:
-    """Efficiency 题：efficiency 标志为 True，或 category 为 Efficiency。缺省视为非 Efficiency。"""
-    if efficiency is True:
-        return True
-    return (category or "").strip().lower() == "efficiency"
 
 
 def _join_sqls(sqls: List[str]) -> str:
@@ -220,6 +192,8 @@ class Verifier:
         query: str = "",
         schema: str = "",
         qep_hard_gate: bool = True,
+        intent_spec: Optional[IntentSpec] = None,
+        scale_factor: Optional[float] = None,
     ):
         self.dialect = (dialect or "postgresql").lower()
         self.category = (category or "").strip()
@@ -234,6 +208,8 @@ class Verifier:
         self.query = query or ""
         self.schema = schema or ""
         self.qep_hard_gate = bool(qep_hard_gate)
+        self.intent_spec = intent_spec
+        self.scale_factor = scale_factor
 
     def _mark_clean_if_restored(self) -> None:
         """有 clean_up 且包执行成功后，沙箱应回到基线，可跳过下一轮 full reset。"""
@@ -454,6 +430,16 @@ class Verifier:
             elif self.category.lower() == "management":
                 soft_ex = "skipped"
 
+            # Efficiency 采样外推 Timeout 风险
+            if passed and self.is_efficiency and self.scale_factor:
+                risk = estimate_full_timeout_risk(
+                    latency_ms, self.scale_factor, self.exec_timeout_ms
+                )
+                if risk:
+                    passed = False
+                    errors.append(risk)
+                    failure_reasons.append(f"[{cand.id}] {risk}")
+
             # 规则注册表：按类目预筛后逐条判定（原 if 链顺序不变）
             if passed:
                 ctx = RuleContext(
@@ -466,6 +452,7 @@ class Verifier:
                     pred_sqls=list(cand.pred_sqls),
                     preprocess_sql=list(self.preprocess_sql or []),
                     rows=rows,
+                    intent_spec=self.intent_spec,
                 )
                 for rule in rules_for(ctx.category_lower, ctx.is_efficiency):
                     msg = rule.check(ctx)
@@ -502,10 +489,16 @@ class Verifier:
                         errors.append("QEP cost 缺失，Efficiency 无法硬比较")
                 elif cost >= issue_cost:
                     msg = f"QEP cost {cost} ≥ issue {issue_cost}"
+                    allow = qep_structure_allows_cost_regression(
+                        cand.pred_sqls, issue_sql
+                    )
                     if self.qep_hard_gate:
-                        passed = False
-                        errors.append(msg)
-                        failure_reasons.append(f"[{cand.id}] {msg}")
+                        if allow and cost < issue_cost * 1.15:
+                            errors.append(msg + "（结构优化允许小幅回退）")
+                        else:
+                            passed = False
+                            errors.append(msg)
+                            failure_reasons.append(f"[{cand.id}] {msg}")
                     else:
                         errors.append(msg + "（采样沙箱仅排序，不硬否决）")
                         default_logger.info(
@@ -530,6 +523,7 @@ class Verifier:
                 latency_ms=latency_ms,
                 errors=errors,
                 rank_key=rank_key,
+                rows=rows if any(_is_selectish(s) for s in cand.pred_sqls) else None,
             )
             per.append(cvr)
             if passed:

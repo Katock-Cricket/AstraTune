@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, FrozenSet, List, Optional
+from typing import Any, Callable, FrozenSet, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from optimization.intent_spec import IntentSpec
 
 
 @dataclass(frozen=True)
@@ -18,7 +21,9 @@ class RuleContext:
     schema: str
     pred_sqls: List[str]
     preprocess_sql: List[str]
-    rows: Optional[List[Any]] = None  # 候选执行结果行（query_output_example_mismatch 用）
+    rows: Optional[List[Any]] = None  # 候选执行结果行
+    column_names: Optional[List[str]] = None  # SELECT 结果列名
+    intent_spec: Optional["IntentSpec"] = None
 
 
 @dataclass(frozen=True)
