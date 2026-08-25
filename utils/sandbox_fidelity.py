@@ -28,6 +28,14 @@ def format_fidelity_text(fidelity: Optional[Dict[str, Any]]) -> str:
     """短自然语言 + 要点列表，注入 Agent 上下文。"""
     if not fidelity:
         return "（无沙箱保真信息）"
+    if fidelity.get("mode") == "direct_target":
+        note = fidelity.get("note") or "直连评测库"
+        return (
+            f"{note}\n"
+            f"database={fidelity.get('database')} "
+            f"host={fidelity.get('host')}:{fidelity.get('port')}\n"
+            "[注意] Soft EX / EXPLAIN 在评测库上执行；勿对超大库做全量破坏性 DDL。"
+        )
     lines: List[str] = []
     dialect = fidelity.get("dialect") or "?"
     slot = fidelity.get("slot_db") or "?"

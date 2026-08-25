@@ -48,6 +48,7 @@ def main() -> None:
         slot_index=payload.get("slot_index"),
         workers=int(payload.get("workers") or 1),
         prior_pred=payload.get("prior_pred"),
+        function=payload.get("function"),
     )
     out = slim_output_record(result)
     sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")

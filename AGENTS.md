@@ -51,39 +51,41 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 
 | 路径 | 说明 |
 | ---- | ---- |
-| `diagnosis/` | 诊断 Agent（LangGraph ReAct），入口 `scripts/diag.py` |
-| `optimization/` | Generate–Verify（无 Reflect），单例入口 `scripts/opt.py` |
+| `diagnosis/` | 诊断 Agent（LangGraph ReAct） |
+| `optimization/` | Generate–Verify（无 Reflect） |
 | `optimization/rules/` | Verify 否决规则注册表（common / category / **spec** / flash_overfit 单题规则） |
 | `optimization/intent_spec.py` | Intent Spec 抽取与解析（类目 goal 权威） |
 | `optimization/sql_shape.py` | 输出列/换表/DDL 升温纯函数 |
 | `optimization/consensus.py` | 多候选共识分簇与早停门禁 |
 | `optimization/eff_risk.py` | Efficiency 采样外推 Timeout 风险 |
-| `utils/inference_runner.py` | **统一单条推理链路**（`run_single_instance`；diag/opt/infer/批跑 run_one 四入口共用） |
-| `scripts/infer.py` | 单例端到端：诊断 → 优化 → `pred_sqls` |
+| `utils/inference_runner.py` | **统一单条推理**（`function` × `mode`；infer / 批跑共用） |
+| `utils/effi_adapter.py` | Effi-SQL 题面 ↔ 推理记录 |
+| `scripts/infer.py` | **唯一单条 CLI**（`--function` / `--mode` / `--benchmark effi`） |
 | `scripts/run_bird_critic.py` | BIRD 批量推理编排（默认 subprocess 隔离） |
+| `scripts/run_effi_sql.py` / `run_effi_eval.py` | Effi 批推理 + Diff-SQL end2end |
 | `scripts/run_bird_worker.py` | 单题子进程 worker |
 | `scripts/slim_pred_jsonl.py` | pred JSONL 去重 + slim |
 | `sandbox/` | PG/MySQL 执行器、`SandboxManager`、`statistics.py`、模板缓存 |
 | `sandbox/db_admin.py` | 沙箱域底层（执行器创建/建库/槽位库名；打破循环依赖） |
 | `utils/batch_records.py` | 批跑记录纯函数（done 判定/slim/finalize/兜底行/汇总） |
 | `tools/sandbox_tool.py` | LangChain `execute_sql` |
-| `config/*.json` | agents / sandbox / target_db |
+| `config/*.json` | agents / sandbox / target_db / **effi_db** |
 | `docker/` | PG target:5432、PG sandbox:5433、MySQL target:3306、MySQL sandbox:3307、API:8010 |
 | `benchmark/` | BIRD-CRITIC 官方评测源码（wrapper / Docker，不含题面与 dumps） |
-| `benchmark_data/` | schema、题面、sol、PG/MySQL table dumps |
+| `benchmark_data/` | BIRD + Effi 题面 / dumps（含 Interact scale、TPC-H raw） |
 | `data/eff_subset.jsonl` | 30 条 PG Efficiency 调试子集 |
 | `at_webui.py` | 空，P2 |
 | `docs/环境搭建.md` | 跨平台启动 |
 | `docs/spec_acc.md` | **准确率规格（PG 530 正式 51.13%）** |
 | `docs/pg530评测报告.md` | **PG 530 官方评测（51.13%）** |
 | `docs/架构说明书.md` | **模块实现与机制（权威）** |
-| `docs/评测对接.md` | merge sol + 官方 wrapper；**`--limit` 必读 §2.1** |
+| `docs/评测对接.md` | BIRD merge+wrapper；**Effi §4**；**`--limit` 必读 §2.1** |
 
 ## 开发优先级
 
 - **P0 / P1**：已完成（Generate–Verify、批跑工程、并发/对齐/消融）
 - **准确率**：**PG 530 正式 51.13%（271/530）** — 见 `docs/pg530评测报告.md`；机制见 `docs/架构说明书.md`
-- **后续**：继续 dig PG530 剩余失败；**Effi-SQL 性能评测**（`Diff-SQL/` submodule）列入下一步；Open-MySQL 全量延后
+- **后续**：继续 dig PG530 剩余失败；**Effi-SQL 全量 R-VES**（兼容链路已通，见 `docs/评测对接.md` §4）；Open-MySQL 全量延后
 - **P2**：WebUI（AstraTune 与 BIRD evaluation 两套 Docker **保持独立**，不合并）
 
 ## 约定
@@ -95,7 +97,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 - LLM：`config/agents.json` + **`OPENAI_API_KEY` / `OPENAI_API_KEYS`**（`;` 分隔）；当前 `llm_key_mode=auto`，`llm_workers=4`。批跑沙箱 `--workers` 与 LLM 池独立。默认 `--isolate subprocess`。
 - 单条示例见 `data/测试数据.md`；`--db-id` 可覆盖目标库名。
 - **改规则/纯函数先补特征测试再动手**：`tests/`（`pytest tests/ -q`，无需 DB）；新机制进独立模块（`intent_spec` / `consensus` / `spec_rules` / `eff_risk`），**勿**往 `verify.py` / `prompts.py` 堆 patch；`flash_overfit.py` **冻结新增**
-- 单条推理改动统一改 `utils/inference_runner.py`；四个 CLI（diag/opt/infer/run_one）只是薄壳，勿在壳里加逻辑。
+- 单条推理改动统一改 `utils/inference_runner.py`；CLI（`infer.py` / 批跑 worker）只是薄壳，勿在壳里加逻辑。`diag.py`/`opt.py` 已删除，由 `--mode` 替代。
 
 ## 环境速查
 
@@ -103,9 +105,10 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 conda activate at
 cd docker && docker compose --env-file stack.defaults.env up -d
 cd scripts
-python diag.py --db-id financial --sql "..." --user-prompt "..."
-python opt.py --db-id financial --sql "..." --diagnosis "【诊断结论】..."
-python infer.py --db-id financial --sql "..." --user-prompt "..."
+python infer.py --db-id financial --sql "..." --user-prompt "..." --mode diag+opt --function general
+python infer.py --mode opt_only --db-id financial --sql "..." --user-prompt "..."
+python infer.py --mode diag_only --function efficiency --sql "..." --category Efficiency
+python infer.py --benchmark effi --id 1 --function efficiency --mode diag+opt
 ```
 
 PG 530 复现：

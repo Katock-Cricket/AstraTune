@@ -1,4 +1,4 @@
-"""AstraTune 仓库内 BIRD-CRITIC 评测数据路径（schema / 题面 / sol / dumps）。"""
+"""AstraTune 仓库内 BIRD-CRITIC / Effi-SQL 评测数据路径（schema / 题面 / sol / dumps）。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,15 @@ POST_INPUT = INPUT_DIR / "post" / "pg-00000-of-00001.jsonl"
 FLASH_SOL = SOL_DIR / "flash_sol" / "bird-critic-1.0-flash_w_sol.jsonl"
 PG_SOL = SOL_DIR / "pg_sol" / "pg_sol.jsonl"
 OPEN_SOL = SOL_DIR / "open_sol" / "open_sol.jsonl"
+
+# Effi-SQL（Diff-SQL 评测栈；dumps 不并进 AstraTune docker/）
+EFFI_DIR = BENCHMARK_DATA / "effi"
+EFFI_INPUT_DIR = EFFI_DIR / "input"
+EFFI_INPUT = EFFI_INPUT_DIR / "effi-sql-pg.jsonl"
+EFFI_INPUT_WITH_DIFFICULTY = EFFI_INPUT_DIR / "effi-sql-pg-with-difficulty.jsonl"
+BIRD_INTERACT_DUMPS = BENCHMARK_DATA / "dumps" / "bird-interact"
+TPCH_RAW = BENCHMARK_DATA / "tpch-3g" / "raw"
+DIFF_SQL_ROOT = ROOT / "Diff-SQL"
 
 
 def mysql_dump_search_dirs(

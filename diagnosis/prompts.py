@@ -31,7 +31,12 @@ def create_table_extraction_user_message(sql: str, user_prompt: str = "") -> str
 """
 
 
-def create_system_prompt(enable_test: bool = False) -> str:
+def create_system_prompt(
+    enable_test: bool = False,
+    *,
+    function: str = "general",
+    assembly: str = "diag+opt",
+) -> str:
     sandbox_tool_desc = """
     **execute_sql**: 在沙箱数据库中执行SQL语句
    - 可以执行EXPLAIN分析查询计划
@@ -54,12 +59,10 @@ def create_system_prompt(enable_test: bool = False) -> str:
         tools_desc.append(sandbox_tool_desc)
         tools_desc.append(reset_tool_desc)
 
-    # 构建工具描述字符串（避免在f-string中使用反斜杠）
     tools_list = "\n".join([f"{i+1}. {desc}" for i, desc in enumerate(tools_desc)])
 
     tools_usage_desc = ""
 
-    # 工具使用与流程说明
     if len(tools_desc) > 0:
         tools_usage_desc = f"""
 ## 可用工具
@@ -85,15 +88,46 @@ def create_system_prompt(enable_test: bool = False) -> str:
 6. 总结问题原因和优化建议（覆盖语法/语义/方言/DDL/性能等）
         """
 
+    fn = (function or "general").strip().lower()
+    asm = (assembly or "diag+opt").strip().lower()
+    if fn == "efficiency":
+        role = (
+            "你是数据库**效率优化**诊断专家：在保持结果语义集合等价的前提下，"
+            "定位慢因并给出可落地的改写/计划优化建议。"
+        )
+        focus_extra = (
+            "- **Efficiency**：优先 EXPLAIN / 索引 / 改写降 cost；禁止改变结果语义\n"
+        )
+    else:
+        role = (
+            "你是一个专业的数据库诊断专家，负责分析泛化 SQL 问题"
+            "（语法错误、语义错误、方言迁移、DDL/触发器、结果不正确、以及性能）。"
+        )
+        focus_extra = ""
 
-    return f"""你是一个专业的数据库诊断专家，负责分析泛化 SQL 问题（语法错误、语义错误、方言迁移、DDL/触发器、结果不正确、以及性能）。
+    if asm == "diag_only":
+        output_fmt = """## 输出格式
+当你认为诊断已完成，请严格使用以下格式；**必须**给出可执行的最终改写 SQL（评测将直接执行）：
 
-## 你的任务
-分析给定的SQL，诊断问题的根本原因，并提供可落地的修复/优化建议。
+```
+【诊断结论】
+问题原因：
+<详细描述问题的根本原因>
 
-{tools_usage_desc}
+优化建议：
+<具体的优化建议>
 
-## 输出格式
+最终SQL：
+```sql
+<完整可执行的改写/修复 SQL；多语句可写多段围栏或用分号分隔>
+```
+```
+
+也可在结论末尾附加一行 JSON：`{"pred_sqls":["SQL1","SQL2"]}`（优先被解析）。
+**禁止**只写文字建议而无 SQL。
+"""
+    else:
+        output_fmt = """## 输出格式
 当你认为诊断已完成，请严格使用以下格式输出最终结论，将诊断结论以“【诊断结论】”开头：
 
 ```
@@ -107,6 +141,16 @@ def create_system_prompt(enable_test: bool = False) -> str:
 预期效果：
 <优化后预期的效果>
 ```
+"""
+
+    return f"""{role}
+
+## 你的任务
+分析给定的SQL，诊断问题的根本原因，并提供可落地的修复/优化建议。
+{focus_extra}
+{tools_usage_desc}
+
+{output_fmt}
 
 ## 注意事项
 - 保持专业和严谨，基于数据和证据进行分析
@@ -139,14 +183,23 @@ def create_initial_message(
     clean_up_sql: str = None,
     user_prompt: str = None,
     sandbox_fidelity: str = None,
+    *,
+    function: str = "general",
+    assembly: str = "diag+opt",
 ) -> str:
     """
     创建初始诊断消息
     """
     tables = _tables_from_schema_ddl(schema)
     tables_display = ", ".join(tables) if tables else "（见下方 DDL 注释中的表名）"
+    head = "请诊断以下SQL的问题："
+    if (function or "").lower() == "efficiency":
+        head = "请从**执行效率**角度诊断以下SQL，并给出保语义的优化方向："
+    if (assembly or "").lower() == "diag_only":
+        head += "（本模式须在结论中给出最终可执行 SQL）"
+
     message_parts = [
-        "请诊断以下SQL的问题：",
+        head,
         "",
         "## 问题SQL语句",
         f"```sql\n{sql}\n```",

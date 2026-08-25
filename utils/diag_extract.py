@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import List, Optional, Tuple
 
@@ -11,9 +12,21 @@ _SQL_FENCE = re.compile(
     re.IGNORECASE,
 )
 _PRED_LABEL = re.compile(
-    r"(?:pred_sqls?|修复\s*SQL|优化\s*SQL|建议\s*SQL)\s*[:：]\s*(.+)",
+    r"(?:pred_sqls?|修复\s*SQL|优化\s*SQL|建议\s*SQL|改写\s*SQL)\s*[:：]\s*(.+)",
     re.IGNORECASE,
 )
+_JSON_PRED = re.compile(
+    r"\{[^{}]*\"pred_sqls\"\s*:\s*\[[\s\S]*?\][^{}]*\}",
+    re.IGNORECASE,
+)
+
+
+def _normalize_parts(block: str) -> List[str]:
+    parts = [p.strip().rstrip(";") for p in re.split(r";\s*\n|;\s*$", block) if p.strip()]
+    if not parts:
+        s = block.strip().rstrip(";")
+        return [s] if s else []
+    return [p for p in parts if p and not p.startswith("--")]
 
 
 def extract_pred_sqls_from_diagnosis(
@@ -23,33 +36,49 @@ def extract_pred_sqls_from_diagnosis(
 ) -> Tuple[List[str], bool]:
     """
     返回 (pred_sqls, used_fallback)。
-    优先 Markdown SQL 围栏；其次「修复 SQL:」类标签后的语句。
+    优先顺序：JSON {"pred_sqls":[...]} → Markdown SQL 围栏 → 「修复 SQL:」标签。
     """
     text = diagnosis_report or ""
+
+    for m in _JSON_PRED.finditer(text):
+        try:
+            obj = json.loads(m.group())
+        except json.JSONDecodeError:
+            continue
+        raw = obj.get("pred_sqls") if isinstance(obj, dict) else None
+        if isinstance(raw, list):
+            parts = [str(x).strip().rstrip(";") for x in raw if str(x).strip()]
+            if parts:
+                return parts, False
+        if isinstance(raw, str) and raw.strip():
+            return _normalize_parts(raw), False
+
+    # 整段若是 JSON
+    stripped = text.strip()
+    if stripped.startswith("{") and "pred_sqls" in stripped:
+        try:
+            obj = json.loads(stripped)
+            raw = obj.get("pred_sqls") if isinstance(obj, dict) else None
+            if isinstance(raw, list):
+                parts = [str(x).strip().rstrip(";") for x in raw if str(x).strip()]
+                if parts:
+                    return parts, False
+        except json.JSONDecodeError:
+            pass
+
     fences = _SQL_FENCE.findall(text)
     collected: List[str] = []
     for block in fences:
-        parts = [p.strip().rstrip(";") for p in re.split(r";\s*\n|;\s*$", block) if p.strip()]
-        # 整块也可能是多语句用分号连接
-        if not parts:
-            s = block.strip().rstrip(";")
-            if s:
-                collected.append(s)
-        else:
-            for p in parts:
-                if p and not p.startswith("--"):
-                    collected.append(p)
-
+        collected.extend(_normalize_parts(block))
     if collected:
         return collected, False
 
     for m in _PRED_LABEL.finditer(text):
         chunk = m.group(1).strip()
-        # 截到下一空行或标题
         chunk = re.split(r"\n\s*\n|\n#{1,3}\s|\n【", chunk, maxsplit=1)[0].strip()
         chunk = chunk.strip("`").strip()
         if chunk:
-            parts = [p.strip().rstrip(";") for p in chunk.split(";") if p.strip()]
+            parts = _normalize_parts(chunk)
             if parts:
                 return parts, False
 

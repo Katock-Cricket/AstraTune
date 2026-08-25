@@ -84,19 +84,19 @@ async def extract_involved_tables_async(
 class DiagnosisAgent:
     """SQL诊断Agent"""
     
-    def __init__(self, config: Dict[str, Any], sandbox_tool: SandboxTool = None):
+    def __init__(self, config: Dict[str, Any], sandbox_tool: Optional[SandboxTool] = None):
         """
-        初始化DiagnosisAgent实例
+        初始化诊断Agent
         
         Args:
-            config: Agent配置，包含LLM配置和其他参数
+            config: 配置字典，包含llm配置等
             sandbox_tool: 沙箱工具实例
         """
         self.config = config
         self.sandbox_tool = sandbox_tool
-        
-        # 获取配置参数
         self.llm_config = config.get("llm", {})
+        
+        # 从配置中获取参数
         self.max_iter = config.get("max_iter", 10)
         self.enable_test = config.get("enable_test", False)
         
@@ -139,28 +139,10 @@ class DiagnosisAgent:
         clean_up_sql: str = None,
         user_prompt: str = None,
         sandbox_fidelity: str = None,
-        stream_handler: Optional[StreamHandler] = None
+        stream_handler: Optional[StreamHandler] = None,
+        function: str = "general",
+        assembly: str = "diag+opt",
     ) -> str:
-        """
-        流式执行SQL诊断（异步）
-        
-        使用 astream_events(version="v2") 捕获完整的推理过程
-        通过 stream_handler 实时显示（Rich美化）
-        同时通过 logger 记录到文件（如果指定了 --log-file）
-        
-        Args:
-            ori_sql: 原始问题SQL语句
-            schema: 相关表的schema信息（DDL语句），须含 `-- 表: name` 行
-            exec_log: 执行日志（包含平均执行时间、执行次数等）
-            sampled_tables: 采样表列表（可选）
-            preprocess_sql: 测试本条sql的前置sql
-            clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
-            user_prompt: 用户提示
-            stream_handler: 流式事件处理器
-
-        Returns:
-            诊断报告（自然语言）
-        """
         tables_in_schema = _tables_from_schema_ddl(schema)
         default_logger.info(f"SQL: {ori_sql[:100]}...")
         default_logger.info(f"涉及表(来自 schema): {tables_in_schema}")
@@ -175,10 +157,12 @@ class DiagnosisAgent:
             default_logger.info(f"用户提示: {user_prompt[:100]}...")
             
         try:
-            # 创建系统提示
-            system_prompt = create_system_prompt(enable_test=self.enable_test)
+            system_prompt = create_system_prompt(
+                enable_test=self.enable_test,
+                function=function,
+                assembly=assembly,
+            )
             
-            # 创建初始消息
             initial_message = create_initial_message(
                 sql=ori_sql,
                 schema=schema,
@@ -188,9 +172,10 @@ class DiagnosisAgent:
                 clean_up_sql=clean_up_sql,
                 user_prompt=user_prompt,
                 sandbox_fidelity=sandbox_fidelity,
+                function=function,
+                assembly=assembly,
             )
             
-            # 构建初始状态
             initial_state = {
                 "messages": [
                     SystemMessage(content=system_prompt),
@@ -216,7 +201,6 @@ class DiagnosisAgent:
                             conclusion = output.get("conclusion", "")
                             final_state = output
             
-            # 如果没有从事件中提取到结论，则使用最后一条消息作为结论
             if not conclusion and final_state:
                 messages = final_state.get("messages", [])
                 if messages:
@@ -227,7 +211,6 @@ class DiagnosisAgent:
             if not conclusion:
                 conclusion = "诊断未能生成有效结论，请检查日志。"
             
-            # default_logger.info("诊断完成（流式）")
             if stream_handler:
                 summary = stream_handler.get_summary()
                 default_logger.info(f"总事件数: {summary['total_events']}, 迭代次数: {summary['iterations']}, 工具调用: {summary['tool_calls']}")
@@ -250,26 +233,10 @@ class DiagnosisAgent:
         clean_up_sql: str = None,
         user_prompt: str = None,
         sandbox_fidelity: str = None,
+        function: str = "general",
+        assembly: str = "diag+opt",
     ) -> str:
-        """
-        执行SQL诊断（同步包装器，保持向后兼容）
-        
-        Args:
-            ori_sql: 原始问题SQL语句
-            schema: 相关表的schema信息（DDL语句），须含 `-- 表: name` 行
-            exec_log: 执行日志（包含平均执行时间、执行次数等）
-            sampled_tables: 采样表列表（可选）
-            preprocess_sql: 测试本条sql的前置sql
-            clean_up_sql: 测试本条sql的清理sql，用于恢复测试环境
-            user_prompt: 用户提示
-
-        Returns:
-            诊断报告（自然语言）
-        """
-         # 创建 logger 模式的 stream_handler
         stream_handler = StreamHandler(mode="logger", logger=default_logger)
-        
-        # 复用流式诊断方法
         conclusion = asyncio.run(self.diagnose_stream(
             ori_sql=ori_sql,
             schema=schema,
@@ -279,7 +246,8 @@ class DiagnosisAgent:
             clean_up_sql=clean_up_sql,
             user_prompt=user_prompt,
             sandbox_fidelity=sandbox_fidelity,
-            stream_handler=stream_handler
+            stream_handler=stream_handler,
+            function=function,
+            assembly=assembly,
         ))
-
         return conclusion

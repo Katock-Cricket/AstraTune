@@ -73,8 +73,15 @@ def parse_args():
         "--mode",
         type=str,
         default="diag+opt",
-        choices=["diag+opt", "diag_only", "opt_only"],
-        help="消融模式",
+        choices=["diag+opt", "diag_only", "opt_only", "llm_only"],
+        help="装配模式（四种均产出 pred_sqls）",
+    )
+    p.add_argument(
+        "--function",
+        type=str,
+        default=None,
+        choices=["general", "efficiency"],
+        help="职能模式；默认由 category / efficiency 字段推断",
     )
     p.add_argument(
         "--skip-diagnosis",
@@ -191,6 +198,7 @@ def _run_one_subprocess(
     workers: int,
     timeout_s: int,
     prior_pred: Optional[Dict[str, Any]] = None,
+    function: Optional[str] = None,
 ) -> Dict[str, Any]:
     iid = record.get("instance_id")
     payload = {
@@ -199,6 +207,7 @@ def _run_one_subprocess(
         "mode": mode,
         "slot_index": slot_index,
         "workers": workers,
+        "function": function,
     }
     if prior_pred:
         payload["prior_pred"] = {
@@ -276,6 +285,7 @@ def run_one(
     slot_index: Optional[int] = None,
     workers: int = 1,
     prior_pred: Optional[Dict[str, Any]] = None,
+    function: Optional[str] = None,
 ) -> Dict[str, Any]:
     """单题推理（进程内）。核心链路见 utils/inference_runner.run_single_instance。"""
     out = copy.deepcopy(record)
@@ -291,6 +301,8 @@ def run_one(
     schema_from_record = (
         record.get("original_schema") or record.get("preprocess_schema") or ""
     )
+    fn = function or record.get("function")
+    benchmark = record.get("benchmark")
 
     result = run_single_instance(
         sql=instance_issue_sql(record),
@@ -303,11 +315,13 @@ def run_one(
         original_schema=str(schema_from_record or ""),
         efficiency=efficiency,
         mode=mode,
+        function=fn,
         prior_diagnosis=(prior_pred or {}).get("diagnosis_report"),
         slot_index=slot_index,
         workers=workers,
         instance_id=str(record.get("instance_id") or "-"),
         logger=logger,
+        benchmark=str(benchmark) if benchmark else None,
     )
 
     out["pred_sqls"] = result.pred_sqls
@@ -323,7 +337,8 @@ def run_one(
         f"success={out['optimization_meta'].get('success')} "
         f"rounds={out['optimization_meta'].get('rounds')} "
         f"fallback={out['optimization_meta'].get('fallback')} "
-        f"hard_fail={out['optimization_meta'].get('hard_fail')}"
+        f"hard_fail={out['optimization_meta'].get('hard_fail')} "
+        f"function={out['optimization_meta'].get('function')}"
     )
     return out
 
@@ -430,6 +445,7 @@ def _run_batch(args, logger, dialect, mode, configs, batch_cfg, workers, records
         prior = pred_map.get(rec.get("instance_id"))
 
         try:
+            fn = getattr(args, "function", None)
             if isolate == "subprocess":
                 return _run_one_subprocess(
                     rec,
@@ -440,6 +456,7 @@ def _run_batch(args, logger, dialect, mode, configs, batch_cfg, workers, records
                     workers=workers,
                     timeout_s=timeout_s,
                     prior_pred=prior,
+                    function=fn,
                 )
             return run_one(
                 rec,
@@ -449,6 +466,7 @@ def _run_batch(args, logger, dialect, mode, configs, batch_cfg, workers, records
                 slot_index=slot,
                 workers=workers,
                 prior_pred=prior,
+                function=fn,
             )
         finally:
             if slot_q is not None and slot is not None:

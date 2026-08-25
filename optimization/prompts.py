@@ -1,19 +1,32 @@
-GENERATE_SYSTEM_PROMPT = """你是 AstraTune 的 SQL 修复 Generate 智能体。
-根据 Intent Spec、诊断报告与 issue_sql 生成多样化候选修复方案。
+def build_generate_system_prompt(*, function: str = "general", has_diagnosis: bool = True) -> str:
+    fn = (function or "general").strip().lower()
+    diag_line = (
+        "根据 Intent Spec、诊断报告与 issue_sql 生成多样化候选修复方案。"
+        if has_diagnosis
+        else "根据 Intent Spec、用户问题与 issue_sql 生成多样化候选（**无诊断报告**，勿臆造诊断）。"
+    )
+    eff_extra = ""
+    if fn == "efficiency":
+        eff_extra = (
+            "\n12. function=efficiency：必须集合等价改写；优先降 cost/latency；"
+            "禁止改变投影语义；勿引入与题意无关的 DDL。"
+        )
+    return f"""你是 AstraTune 的 SQL 修复 Generate 智能体。
+{diag_line}
 
 硬性要求：
 1. 只输出一个 JSON 对象，不要 Markdown 围栏，不要额外解释。
 2. JSON 结构：
-{
+{{
   "candidates": [
-    {
+    {{
       "id": "c1",
       "pred_sqls": ["SQL1", "SQL2"],
       "rationale": "简短理由",
       "strategy_tag": "rewrite|ddl|mixed|represent_row|set_equiv"
-    }
+    }}
   ]
-}
+}}
 3. 生成 3–5 个候选；pred_sqls 为按序执行的 body SQL 列表（勿含 preprocess/clean_up）。
 4. 阅读 failure_reasons 与 round_history，避免重复已否决方案。
 5. 不要编造 schema/用户问题中不存在的表/列；禁止凭空 CREATE 业务表。
@@ -26,8 +39,12 @@ GENERATE_SYSTEM_PROMPT = """你是 AstraTune 的 SQL 修复 Generate 智能体�
     - Query：语义对齐用户问题；投影列与 Spec 一致；递归加终止条件。
     - Personalization：每组代表行用 DISTINCT ON 或 min(id) JOIN，勿只 SELECT 分组键。
     - Management：交付完整可执行脚本；preprocess 新建表常为评测对象。
-11. 详细约束以 ## Intent Spec (JSON) 为准；strategy_tag 须与修复策略一致。
+11. 详细约束以 ## Intent Spec (JSON) 为准；strategy_tag 须与修复策略一致。{eff_extra}
 """
+
+
+# 向后兼容：默认 system prompt
+GENERATE_SYSTEM_PROMPT = build_generate_system_prompt()
 
 
 def build_generate_user_message(
@@ -46,6 +63,7 @@ def build_generate_user_message(
     clean_up_sql: list[str] | str | None = None,
     sandbox_fidelity: str | None = None,
     intent_spec_json: str | None = None,
+    function: str = "general",
 ) -> str:
     if isinstance(issue_sql, str):
         issue_sql_text = issue_sql
@@ -85,7 +103,8 @@ def build_generate_user_message(
         hist_block = "（无，首轮生成）"
 
     cat = (category or "").strip() or "Unknown"
-    is_eff = efficiency is True or cat.lower() == "efficiency"
+    fn = (function or "general").strip().lower()
+    is_eff = efficiency is True or cat.lower() == "efficiency" or fn == "efficiency"
     if is_eff:
         focus = "Efficiency：保持 issue 语义，显著降 QEP cost，避免超时。"
     elif cat.lower() == "query":
@@ -97,9 +116,18 @@ def build_generate_user_message(
 
     spec_block = (intent_spec_json or "").strip() or "（无，按诊断与用户问题推断）"
     fidelity_block = (sandbox_fidelity or "").strip() or "（无）"
+    diag = (diagnosis_report or "").strip()
+    if diag:
+        diag_section = f"## 诊断报告\n{diag}"
+    else:
+        diag_section = (
+            "## 诊断报告\n"
+            "（本轮无诊断；仅依据用户问题、issue_sql、schema 与 Intent Spec 生成。）"
+        )
 
     return f"""dialect: {dialect}
 category: {cat}
+function: {fn}
 efficiency: {efficiency if efficiency is not None else "(未标注)"}
 {focus}
 期望候选数(非严格规定): {num_candidates}
@@ -125,8 +153,7 @@ efficiency: {efficiency if efficiency is not None else "(未标注)"}
 ## schema
 {schema or "(无)"}
 
-## 诊断报告
-{diagnosis_report or "(无)"}
+{diag_section}
 
 ## 上一轮 Verify failure_reasons（务必阅读）
 {reasons_block}

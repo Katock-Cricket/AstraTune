@@ -2,8 +2,12 @@ from pathlib import Path
 
 from utils.benchmark_data import (
     BENCHMARK_DATA,
+    BIRD_INTERACT_DUMPS,
+    DIFF_SQL_ROOT,
     DUMP_MYSQL,
     DUMP_PG,
+    EFFI_INPUT,
+    EFFI_INPUT_DIR,
     FLASH_INPUT,
     FLASH_SCHEMA,
     FLASH_SOL,
@@ -12,6 +16,7 @@ from utils.benchmark_data import (
     POST_INPUT,
     POST_SCHEMA,
     ROOT,
+    TPCH_RAW,
     mysql_dump_search_dirs,
 )
 
@@ -29,6 +34,17 @@ def test_benchmark_data_layout_under_repo_root():
     assert DUMP_MYSQL == ROOT / "benchmark_data" / "dumps" / "mysql"
 
 
+def test_effi_paths():
+    assert EFFI_INPUT_DIR == ROOT / "benchmark_data" / "effi" / "input"
+    assert EFFI_INPUT.name == "effi-sql-pg.jsonl"
+    assert BIRD_INTERACT_DUMPS == ROOT / "benchmark_data" / "dumps" / "bird-interact"
+    assert TPCH_RAW == ROOT / "benchmark_data" / "tpch-3g" / "raw"
+    assert DIFF_SQL_ROOT == ROOT / "Diff-SQL"
+    assert EFFI_INPUT.is_file()
+    assert (BIRD_INTERACT_DUMPS / "solar_panel_template").is_dir()
+    assert (TPCH_RAW / "lineitem.tbl").is_file()
+
+
 def test_paths_do_not_use_legacy_locations():
     blob = " ".join(
         p.as_posix()
@@ -39,6 +55,9 @@ def test_paths_do_not_use_legacy_locations():
             PG_SOL,
             DUMP_PG,
             DUMP_MYSQL,
+            EFFI_INPUT,
+            BIRD_INTERACT_DUMPS,
+            TPCH_RAW,
         )
     )
     assert "benchmark/baseline/data" not in blob

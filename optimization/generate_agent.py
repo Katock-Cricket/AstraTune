@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from optimization.prompts import GENERATE_SYSTEM_PROMPT, build_generate_user_message
+from optimization.prompts import build_generate_system_prompt, build_generate_user_message
 from optimization.strategy_slots import enforce_strategy_slots
 from optimization.types import Candidate
 from optimization.intent_spec import IntentSpec, empty_intent_spec
@@ -79,8 +79,15 @@ class GenerateAgent:
         clean_up_sql: Optional[List[str] | str] = None,
         sandbox_fidelity: str = "",
         intent_spec: Optional[IntentSpec] = None,
+        function: str = "general",
     ) -> List[Candidate]:
         spec = intent_spec or empty_intent_spec()
+        has_diag = bool((diagnosis_report or "").strip())
+        fn = (
+            "efficiency"
+            if efficiency is True or str(function).lower() == "efficiency"
+            else (function or "general")
+        )
         user_msg = build_generate_user_message(
             diagnosis_report=diagnosis_report,
             issue_sql=issue_sql,
@@ -96,11 +103,15 @@ class GenerateAgent:
             clean_up_sql=clean_up_sql,
             sandbox_fidelity=sandbox_fidelity,
             intent_spec_json=spec.render_for_prompt(),
+            function=fn,
+        )
+        system_prompt = build_generate_system_prompt(
+            function=fn, has_diagnosis=has_diag
         )
         with timed_stage("generate_llm", round_hint="generate"):
             resp = self.llm.invoke(
                 [
-                    SystemMessage(content=GENERATE_SYSTEM_PROMPT),
+                    SystemMessage(content=system_prompt),
                     HumanMessage(content=user_msg),
                 ]
             )

@@ -28,6 +28,7 @@ class OptState(TypedDict, total=False):
     category: str
     dialect: str
     efficiency: Optional[bool]
+    function: str
     preprocess_sql: List[str]
     clean_up_sql: List[str]
     sandbox_fidelity: str
@@ -112,6 +113,7 @@ def create_optimization_graph(
                     clean_up_sql=state.get("clean_up_sql") or [],
                     sandbox_fidelity=state.get("sandbox_fidelity") or "",
                     intent_spec=state.get("intent_spec") or empty_intent_spec(),
+                    function=state.get("function") or "general",
                 )
             return {
                 "round": rnd,
@@ -360,6 +362,7 @@ def run_optimization(
     dialect: str,
     opt_config: Dict[str, Any],
     efficiency: Optional[bool] = None,
+    function: str = "general",
     preprocess_sql: Any = None,
     clean_up_sql: Any = None,
     sandbox_fidelity: str = "",
@@ -437,6 +440,7 @@ def run_optimization(
         "category": category or "",
         "dialect": dialect or "postgresql",
         "efficiency": efficiency,
+        "function": (function or "general"),
         "preprocess_sql": pre_list,
         "clean_up_sql": cu_list,
         "sandbox_fidelity": sandbox_fidelity or "",

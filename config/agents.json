@@ -51,7 +51,8 @@
   },
   "ablation": {
     "default_mode": "diag+opt",
-    "modes": ["diag+opt", "diag_only", "opt_only"]
+    "modes": ["diag+opt", "diag_only", "opt_only", "llm_only"],
+    "functions": ["general", "efficiency"]
   },
   "statistics": {
     "pg_column_hist_mcv": true,

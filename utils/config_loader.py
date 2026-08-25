@@ -38,7 +38,37 @@ def load_all_configs() -> Dict[str, Dict[str, Any]]:
     configs["agents"] = _load_json_config("agents.json")
     configs["sandbox"] = _load_json_config("sandbox.json")
     configs["target_db"] = _load_json_config("target_db.json")
+    configs["effi_db"] = _load_json_config("effi_db.json")
     return configs
+
+
+def resolve_effi_target_config(
+    configs: Dict[str, Dict[str, Any]],
+    db_id: str,
+) -> Dict[str, Any]:
+    """按 Effi-SQL db 名解析 Diff-SQL 评测库连接（7001 小库 / 5438 TPC-H）。"""
+    effi = configs.get("effi_db") or {}
+    key = str(db_id or "").strip().lower()
+    profile_name = (effi.get("databases") or {}).get(key)
+    if not profile_name:
+        raise ValueError(f"未知 Effi db_id={db_id!r}；见 config/effi_db.json databases")
+    profile = dict(effi.get(profile_name) or {})
+    if not profile:
+        raise ValueError(f"Effi profile {profile_name!r} 缺失")
+    out = dict(profile)
+    out.setdefault("dialect", "postgresql")
+    if profile_name == "small":
+        out["database"] = key
+    elif not out.get("database"):
+        out["database"] = "tpch_3g"
+    return out
+
+
+def is_effi_db_id(configs: Dict[str, Dict[str, Any]], db_id: Optional[str]) -> bool:
+    if not db_id:
+        return False
+    databases = (configs.get("effi_db") or {}).get("databases") or {}
+    return str(db_id).strip().lower() in databases
 
 
 def _pick_dialect_section(cfg: Dict[str, Any], dialect: str) -> Dict[str, Any]:

@@ -142,19 +142,44 @@ def setup_executors(
     configs: Optional[Dict[str, Any]] = None,
     slot_index: Optional[int] = None,
     workers: int = 1,
+    direct_target: bool = False,
 ) -> Tuple[Any, Any, Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
     返回 (target_executor, sandbox_executor, agent_config, opt_config, target_cfg, sandbox_cfg)
     执行器已 connect。
+
+    direct_target=True（Effi-SQL）：target/sandbox 均直连评测库（7001/5438），
+    不建 AstraTune 槽位库、不做采样拷贝。
     """
+    from utils.config_loader import resolve_effi_target_config
+
     configs = configs or load_all_configs()
     dialect = normalize_dialect(dialect)
     diag = get_diagnosis_config(configs, dialect=dialect)
     agent_config = diag.get("agent", {})
-    target_cfg = dict(diag.get("target_db") or {})
-    sandbox_cfg = dict(diag.get("sandbox") or {})
     opt_config = get_optimization_config(configs)
     batch_cfg = get_batch_config(configs)
+
+    if direct_target:
+        if not db_id:
+            raise ValueError("direct_target 需要 db_id（Effi db 名）")
+        target_cfg = resolve_effi_target_config(configs, str(db_id))
+        dialect = normalize_dialect(target_cfg.get("dialect") or dialect)
+        sandbox_cfg = dict(target_cfg)
+        target_ex = create_executor(target_cfg)
+        sandbox_ex = create_executor(sandbox_cfg)
+        with timed_stage(
+            "target_connect",
+            slot_db=target_cfg.get("database"),
+            target_db=target_cfg.get("database"),
+        ):
+            target_ex.connect()
+        with timed_stage("sandbox_connect", slot_db=sandbox_cfg.get("database")):
+            sandbox_ex.connect()
+        return target_ex, sandbox_ex, agent_config, opt_config, target_cfg, sandbox_cfg
+
+    target_cfg = dict(diag.get("target_db") or {})
+    sandbox_cfg = dict(diag.get("sandbox") or {})
 
     if db_id:
         target_cfg["database"] = db_id
@@ -182,6 +207,45 @@ def setup_executors(
     with timed_stage("sandbox_connect", slot_db=slot_db):
         sandbox_ex.connect()
     return target_ex, sandbox_ex, agent_config, opt_config, target_cfg, sandbox_cfg
+
+
+def make_noop_reset_fn(executor=None):
+    """Effi 直连评测库：不做 cleanup/setup；尽量 ROLLBACK 清掉失败事务。"""
+    from utils.sql_mutate import sql_may_mutate
+
+    state = {"dirty": False, "full_resets": 0, "skipped": 0}
+
+    def mark_sql(sql: str) -> None:
+        if sql_may_mutate(sql):
+            state["dirty"] = True
+
+    def mark_clean() -> None:
+        state["dirty"] = False
+
+    def reset_fn(force: bool = False) -> str:
+        state["skipped"] += 1
+        from utils.timing import log_timing
+
+        if executor is not None:
+            try:
+                executor.execute("ROLLBACK")
+            except Exception:
+                pass
+        log_timing("sandbox_reset", 0.0, outcome="noop_direct_target", skipped=state["skipped"])
+        state["dirty"] = False
+        return "noop"
+
+    reset_fn.state = state  # type: ignore[attr-defined]
+    reset_fn.mark_clean = mark_clean  # type: ignore[attr-defined]
+    return reset_fn, mark_sql
+
+
+def make_direct_verify_fns(executor):
+    """直连评测库的 Verify 函数组（noop reset + execute/explain）。"""
+    reset_fn, mark_sql = make_noop_reset_fn(executor)
+    execute_fn = make_execute_fn(executor, on_sql=mark_sql)
+    explain_fn = make_explain_fn(executor, "postgresql")
+    return reset_fn, execute_fn, explain_fn
 
 
 def normalize_tables_for_dialect(tables: List[str], dialect: str) -> List[str]:

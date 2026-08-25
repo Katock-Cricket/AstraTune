@@ -1,0 +1,24 @@
+{
+  "small": {
+    "dialect": "postgresql",
+    "host": "127.0.0.1",
+    "port": 7001,
+    "user": "root",
+    "password": "123456"
+  },
+  "tpch": {
+    "dialect": "postgresql",
+    "host": "127.0.0.1",
+    "port": 5438,
+    "user": "postgres",
+    "password": "123456",
+    "database": "tpch_3g"
+  },
+  "databases": {
+    "solar_panel": "small",
+    "polar_equipment": "small",
+    "robot_fault_prediction": "small",
+    "tpch": "tpch",
+    "tpch_3g": "tpch"
+  }
+}

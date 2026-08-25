@@ -1,13 +1,10 @@
-"""统一单条实例推理链路：抽表 → 沙箱 → 诊断 → Generate–Verify → pred_sqls。
+"""统一单条实例推理链路：抽表 → 沙箱 → 装配模式 → pred_sqls。
 
-四个入口共用本模块：
-- scripts/diag.py（mode=diag_only，流式诊断）
-- scripts/opt.py（mode=opt_only，prior_diagnosis=CLI 传入）
-- scripts/infer.py（mode=diag+opt / opt_only）
-- scripts/run_bird_critic.py::run_one（mode 由批跑参数决定，prior_pred 续跑）
+入口：scripts/infer.py；批跑 run_bird_critic / run_effi_sql / worker。
 
-资源（沙箱模板绑定 / 沙箱数据 / 目标库与沙箱连接）在 finally 中统一释放；
-异常不外抛，结构化写入 InferenceResult.error / meta。
+二维模式：
+- function: general | efficiency
+- assembly (mode): diag+opt | diag_only | opt_only | llm_only
 """
 
 from __future__ import annotations
@@ -21,11 +18,13 @@ from diagnosis.agent import DiagnosisAgent, extract_involved_tables
 from optimization.graph import run_optimization
 from optimization.intent_spec import extract_intent_spec
 from tools.sandbox_tool import SandboxTool
-from utils.config_loader import load_all_configs
+from utils.config_loader import is_effi_db_id, load_all_configs
 from utils.diag_extract import extract_pred_sqls_from_diagnosis
+from utils.llm_only import run_llm_only
 from utils.logger import default_logger
 from utils.pipeline import (
     fetch_schema_ddl,
+    make_direct_verify_fns,
     make_verify_fns,
     normalize_tables_for_dialect,
     prepare_sandbox,
@@ -42,7 +41,8 @@ from utils.timing import (
     set_timing_context,
 )
 
-VALID_MODES = ("diag+opt", "diag_only", "opt_only")
+VALID_MODES = ("diag+opt", "diag_only", "opt_only", "llm_only")
+VALID_FUNCTIONS = ("general", "efficiency")
 
 
 @dataclass
@@ -51,7 +51,7 @@ class InferenceResult:
 
     diagnosis_report: str = ""
     pred_sqls: List[str] = field(default_factory=list)
-    meta: Dict[str, Any] = field(default_factory=dict)  # optimization_meta
+    meta: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     elapsed_ms: float = 0.0
     timing_summary: Dict[str, Any] = field(default_factory=dict)
@@ -59,6 +59,21 @@ class InferenceResult:
     schema: str = ""
     fidelity_text: str = ""
     sandbox_info: Dict[str, Any] = field(default_factory=dict)
+
+
+def resolve_function(
+    *,
+    function: Optional[str] = None,
+    category: str = "Query",
+    efficiency: Optional[bool] = None,
+) -> str:
+    """BIRD 默认 general；category=Efficiency / efficiency=True / 显式 efficiency → efficiency。"""
+    fn = (function or "").strip().lower()
+    if fn in VALID_FUNCTIONS:
+        return fn
+    if efficiency is True or str(category or "").strip().lower() == "efficiency":
+        return "efficiency"
+    return "general"
 
 
 def run_single_instance(
@@ -74,6 +89,7 @@ def run_single_instance(
     original_schema: str = "",
     efficiency: Optional[bool] = None,
     mode: str = "diag+opt",
+    function: Optional[str] = None,
     prior_diagnosis: Optional[str] = None,
     stream: bool = False,
     tables_override: Optional[List[str]] = None,
@@ -82,26 +98,47 @@ def run_single_instance(
     instance_id: str = "-",
     configs: Optional[Dict[str, Any]] = None,
     logger=None,
+    benchmark: Optional[str] = None,
+    direct_target: Optional[bool] = None,
 ) -> InferenceResult:
     """跑通一条实例；返回结构化结果，异常吞入 error/meta。
 
-    mode:
-      - diag+opt: 完整链路（诊断 → 优化）
-      - diag_only: 仅诊断，并从报告抽取 pred_sqls（回退 issue_sql）
-      - opt_only: 跳过诊断（复用 prior_diagnosis 或占位文案），直接优化
+    mode (assembly):
+      - diag+opt: 诊断 → Intent Spec → Generate–Verify
+      - diag_only: 诊断须产出可执行 SQL，再抽取 pred_sqls
+      - opt_only: 无诊断（空串），直接 Generate–Verify
+      - llm_only: 单次 LLM → pred_sqls
+    function:
+      - general | efficiency（影响提示与 Verify 侧重）
     """
     log = logger or default_logger
     mode = str(mode or "diag+opt").strip().lower()
     if mode not in VALID_MODES:
         raise ValueError(f"未知推理模式: {mode}（可选 {VALID_MODES}）")
+    fn = resolve_function(function=function, category=category, efficiency=efficiency)
+    if efficiency is None and fn == "efficiency":
+        efficiency = True
+    if fn == "efficiency" and str(category or "").lower() != "efficiency":
+        # Effi / 显式 efficiency：对齐类目，便于 Soft EX / Intent Spec
+        if str(benchmark or "").lower() == "effi" or efficiency is True:
+            category = "Efficiency"
+
+    all_configs = configs or load_all_configs()
+    use_direct = direct_target
+    if use_direct is None:
+        use_direct = str(benchmark or "").lower() == "effi" or is_effi_db_id(
+            all_configs, db_id
+        )
 
     result = InferenceResult()
     target_ex = sandbox_ex = None
     manager = None
     sandbox_cfg: Dict[str, Any] = {}
     t0 = time.perf_counter()
-    def _finalize_meta_success(success: bool, rounds: int, fallback: bool,
-                                failure_reasons: List[str]) -> None:
+
+    def _finalize_meta_success(
+        success: bool, rounds: int, fallback: bool, failure_reasons: List[str]
+    ) -> None:
         result.pred_sqls = list(result.pred_sqls or [])
         spec_summary = result.meta.get("intent_spec")
         result.meta = {
@@ -109,6 +146,7 @@ def run_single_instance(
             "rounds": rounds,
             "fallback": fallback,
             "mode": mode,
+            "function": fn,
             "failure_reasons": list(failure_reasons or []),
         }
         if spec_summary is not None:
@@ -137,7 +175,8 @@ def run_single_instance(
                 db_id=db_id,
                 slot_index=slot_index,
                 workers=workers,
-                configs=configs or load_all_configs(),
+                configs=all_configs,
+                direct_target=bool(use_direct),
             )
         )
         if not db_name:
@@ -145,11 +184,13 @@ def run_single_instance(
         set_timing_context(slot=sandbox_cfg.get("database"))
         llm_cfg = agent_cfg.get("llm", {})
 
-        # ---- 抽表 + 校验回退（LLM 抽表 → original_schema → 全库基表）----
+        # ---- 抽表 + 校验 ----
         if tables_override:
             tables = list(tables_override)
         else:
-            tables = extract_involved_tables(sql_text, llm_cfg, user_prompt=str(query or ""))
+            tables = extract_involved_tables(
+                sql_text, llm_cfg, user_prompt=str(query or "")
+            )
         tables = normalize_tables_for_dialect(tables, dialect)
         tables = resolve_and_validate_tables(
             tables,
@@ -167,25 +208,58 @@ def run_single_instance(
             schema = str(original_schema)
         result.schema = schema
 
-        # ---- 沙箱（优先模板缓存）----
-        prepared = prepare_sandbox(
-            target_ex,
-            sandbox_ex,
-            sandbox_cfg,
-            tables,
-            db_id=db_name,
-            dialect=dialect,
-        )
-        manager = prepared["manager"]
-        sandbox_info = prepared["info"]
+        # ---- 沙箱 / 直连 Effi ----
+        if use_direct:
+            fidelity = {
+                "mode": "direct_target",
+                "note": "Effi-SQL: Soft EX / Agent 直连评测库，无 AstraTune 采样拷贝",
+                "database": target_cfg.get("database"),
+                "host": target_cfg.get("host"),
+                "port": target_cfg.get("port"),
+            }
+            sandbox_info = {
+                "fidelity": fidelity,
+                "sampled_tables": [],
+                "direct_target": True,
+            }
+            manager = None
+        else:
+            prepared = prepare_sandbox(
+                target_ex,
+                sandbox_ex,
+                sandbox_cfg,
+                tables,
+                db_id=db_name,
+                dialect=dialect,
+            )
+            manager = prepared["manager"]
+            sandbox_info = prepared["info"]
+            fidelity = sandbox_info.get("fidelity") or {}
 
-        fidelity = sandbox_info.get("fidelity") or {}
         if preprocess_sql:
             fidelity = mark_preprocess_applied(fidelity, True)
             sandbox_info["fidelity"] = fidelity
         fidelity_text = format_fidelity_text(fidelity)
         result.fidelity_text = fidelity_text
         result.sandbox_info = sandbox_info
+
+        # ---- llm_only：跳过诊断与 Verify ----
+        if mode == "llm_only":
+            result.diagnosis_report = ""
+            pred = run_llm_only(
+                issue_sql=issue_sql,
+                query=query or "",
+                schema=schema,
+                dialect=dialect,
+                category=category,
+                function=fn,
+                llm_config=(opt_cfg.get("llm") or llm_cfg),
+            )
+            result.pred_sqls = pred
+            _finalize_meta_success(
+                success=True, rounds=0, fallback=False, failure_reasons=[]
+            )
+            return result
 
         # ---- 诊断 ----
         diagnosis_report = ""
@@ -194,6 +268,8 @@ def run_single_instance(
 
             def _on_reset(info: Dict[str, Any]) -> None:
                 nonlocal fidelity, fidelity_text, sandbox_info
+                if use_direct:
+                    return
                 sandbox_info = {**sandbox_info, **(info or {})}
                 fidelity = sandbox_info.get("fidelity") or fidelity
                 if preprocess_sql:
@@ -203,7 +279,8 @@ def run_single_instance(
                 result.fidelity_text = fidelity_text
                 result.sandbox_info = sandbox_info
 
-            tool.bind_sandbox_reset(manager, tables, on_full_reset=_on_reset)
+            if manager is not None:
+                tool.bind_sandbox_reset(manager, tables, on_full_reset=_on_reset)
             if preprocess_sql:
                 tool.register_preprocess_sql(preprocess_sql)
                 tool.apply_preprocess_once()
@@ -219,6 +296,8 @@ def run_single_instance(
                 clean_up_sql=clean_up_sql or None,
                 user_prompt=query or None,
                 sandbox_fidelity=fidelity_text,
+                function=fn,
+                assembly=mode,
             )
             if stream:
                 stream_handler = StreamHandler(mode="rich")
@@ -228,12 +307,14 @@ def run_single_instance(
             else:
                 diagnosis_report = agent.diagnose(**common)
         else:
+            # opt_only：诊断为空；仅当显式传入 prior 时复用（续跑）
             prev_dr = (prior_diagnosis or "").strip()
             if prev_dr:
                 diagnosis_report = prev_dr
                 log.info("opt_only: 复用已有 diagnosis_report")
             else:
-                diagnosis_report = f"跳过诊断。用户问题: {query or '(无)'}"
+                diagnosis_report = ""
+                log.info("opt_only: 无诊断，Generate 仅依题面+schema")
         result.diagnosis_report = diagnosis_report
 
         intent_spec = extract_intent_spec(
@@ -242,14 +323,13 @@ def run_single_instance(
             diagnosis_report=diagnosis_report,
             schema=schema,
             dialect=dialect,
-            efficiency=efficiency if isinstance(efficiency, bool) else None,
+            efficiency=efficiency if isinstance(efficiency, bool) else (fn == "efficiency"),
             llm_config=(opt_cfg.get("llm") or {}),
             use_llm=mode != "diag_only",
             issue_sql=issue_sql,
         )
         result.meta["intent_spec"] = intent_spec.summary()
 
-        # ---- 仅诊断：从报告抽取 pred_sqls ----
         if mode == "diag_only":
             pred, used_fb = extract_pred_sqls_from_diagnosis(
                 diagnosis_report, fallback_issue_sql=issue_sql
@@ -263,17 +343,19 @@ def run_single_instance(
             return result
 
         # ---- Generate–Verify ----
-        smart = str(opt_cfg.get("verify_isolation", "smart_reset")).lower() != "full_reset"
-        # opt_only 未跑诊断，沙箱刚建好，无需保守视为脏
-        initially_dirty = mode != "opt_only"
-        reset_fn, execute_fn, explain_fn = make_verify_fns(
-            manager,
-            tables,
-            sandbox_ex,
-            dialect,
-            smart_reset=smart,
-            initially_dirty=initially_dirty,
-        )
+        if use_direct:
+            reset_fn, execute_fn, explain_fn = make_direct_verify_fns(sandbox_ex)
+        else:
+            smart = str(opt_cfg.get("verify_isolation", "smart_reset")).lower() != "full_reset"
+            initially_dirty = mode != "opt_only"
+            reset_fn, execute_fn, explain_fn = make_verify_fns(
+                manager,
+                tables,
+                sandbox_ex,
+                dialect,
+                smart_reset=smart,
+                initially_dirty=initially_dirty,
+            )
 
         opt = run_optimization(
             diagnosis_report=diagnosis_report,
@@ -282,7 +364,8 @@ def run_single_instance(
             schema=schema,
             category=category,
             dialect=dialect,
-            efficiency=efficiency if isinstance(efficiency, bool) else None,
+            efficiency=efficiency if isinstance(efficiency, bool) else (fn == "efficiency"),
+            function=fn,
             preprocess_sql=preprocess_sql or None,
             clean_up_sql=clean_up_sql or None,
             sandbox_fidelity=fidelity_text,
@@ -304,7 +387,6 @@ def run_single_instance(
         )
         if opt.error:
             result.error = opt.error
-        # hard_fail 判定（有 pred 不清空）由调用方 finalize_inference_record 统一处理
         return result
     except Exception as e:
         log.error(f"{instance_id} 失败: {e}", exc_info=True)
@@ -318,6 +400,7 @@ def run_single_instance(
             "fallback": False,
             "hard_fail": not has_pred,
             "mode": mode,
+            "function": fn,
             "failure_reasons": [str(e)],
         }
         return result
