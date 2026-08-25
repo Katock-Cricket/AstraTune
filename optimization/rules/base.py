@@ -24,6 +24,7 @@ class RuleContext:
     rows: Optional[List[Any]] = None  # 候选执行结果行
     column_names: Optional[List[str]] = None  # SELECT 结果列名
     intent_spec: Optional["IntentSpec"] = None
+    issue_sql: Optional[List[str]] = None
 
 
 @dataclass(frozen=True)

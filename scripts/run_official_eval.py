@@ -11,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EVAL_SRC = ROOT / "benchmark" / "evaluation" / "src"
+DUMP_MYSQL = ROOT / "benchmark_data" / "dumps" / "mysql"
+DUMP_PG = ROOT / "benchmark_data" / "dumps" / "postgresql"
 
 
 def _count_jsonl_rows(path: Path) -> int:
@@ -83,12 +85,14 @@ def main():
         env.setdefault("BIRD_PG_PORT", "5432")
         env.setdefault("BIRD_DB_HOST", "127.0.0.1")
         env.setdefault("BIRD_DB_PORT", "5432")
+        env.setdefault("BIRD_PG_DUMP_DIR", str(DUMP_PG))
         script = EVAL_SRC / "wrapper_evaluation_postgresql.py"
     else:
         env.setdefault("BIRD_MYSQL_HOST", "127.0.0.1")
         env.setdefault("BIRD_MYSQL_PORT", "3306")
         env.setdefault("BIRD_DB_HOST", "127.0.0.1")
         env.setdefault("BIRD_DB_PORT", "3306")
+        env.setdefault("BIRD_MYSQL_DUMP_DIR", str(DUMP_MYSQL))
         script = EVAL_SRC / "wrapper_evaluation_mysql.py"
 
     cmd = [

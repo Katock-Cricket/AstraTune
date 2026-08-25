@@ -63,9 +63,78 @@ def test_heuristic_pers_full_row():
         schema="",
     )
     assert spec.pers_need_full_row is True
+    assert spec.goal == "pers"
+
+
+def test_heuristic_goal_from_category():
+    spec = extract_intent_spec_heuristic(
+        query="merge users by ref",
+        category="Personalization",
+        diagnosis_report="",
+        schema="",
+    )
+    assert spec.goal == "pers"
+
+
+def test_heuristic_mgmt_column_type():
+    spec = extract_intent_spec_heuristic(
+        query="convert the date column to a TIMESTAMP type",
+        category="Management",
+        diagnosis_report="",
+        schema="",
+        issue_sql=["UPDATE account SET date__timestamp = date::timestamp"],
+    )
+    assert spec.goal == "mgmt"
+    assert "column_type" in spec.mgmt_artifacts
+
+
+def test_heuristic_diag_preferred_table():
+    spec = extract_intent_spec_heuristic(
+        query="accounts with transaction variability",
+        category="Query",
+        diagnosis_report="应改用 trans：SELECT account_id FROM trans GROUP BY account_id",
+        schema="-- 表: loan\nCREATE TABLE loan(id int);\n-- 表: trans\nCREATE TABLE trans(id int);",
+        issue_sql=["SELECT account_id FROM loan GROUP BY account_id"],
+    )
+    notes = {e.table: e.sample_note for e in spec.evidence}
+    assert notes.get("trans") == "diag_preferred"
+
+
+def test_heuristic_named_output_columns():
+    spec = extract_intent_spec_heuristic(
+        query="get both `transactionid` and `Segment` columns",
+        category="Management",
+        diagnosis_report="",
+        schema="",
+    )
+    names = [c.name.lower() for c in spec.output_columns]
+    assert "transactionid" in names and "segment" in names
 
 
 def test_empty_intent_spec():
     assert empty_intent_spec().is_empty()
     spec = IntentSpec(output_columns=[OutputColumn(name="x")])
     assert not spec.is_empty()
+
+
+def test_extract_intent_spec_goal_from_category_overrides_llm(monkeypatch):
+    """LLM 把 Pers 写成 query 时，合并必须以类目启发式 goal 为准。"""
+    from optimization import intent_spec as mod
+
+    def fake_llm(**_kwargs):
+        return IntentSpec(
+            goal="query",
+            output_columns=[OutputColumn(name="artist")],
+        )
+
+    monkeypatch.setattr(mod, "extract_intent_spec_llm", fake_llm)
+    spec = mod.extract_intent_spec(
+        query="each artist one representative card row",
+        category="Personalization",
+        diagnosis_report="",
+        schema="",
+        llm_config={"model": "x", "base_url": "http://x"},
+        use_llm=True,
+    )
+    assert spec.goal == "pers"
+    assert spec.pers_need_full_row is True

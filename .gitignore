@@ -209,4 +209,5 @@ __marimo__/
 configs/agents.json
 configs/configs.py
 /docker/postgre_table_dumps
+/benchmark_data/dumps/
 /outputs

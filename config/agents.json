@@ -40,10 +40,10 @@
     "verify_mode": "agent+rules"
   },
   "batch": {
-    "default_workers": 4,
+    "default_workers": 16,
     "max_workers": 16,
-    "llm_workers": 4,
-    "llm_key_mode": "auto",
+    "llm_workers": 16,
+    "llm_key_mode": "single",
     "instance_timeout_s": 2400,
     "sandbox_db_prefix": "astratune_sandbox_",
     "sandbox_slot_count": 16,

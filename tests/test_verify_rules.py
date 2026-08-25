@@ -296,7 +296,7 @@ def test_spec_output_columns_pass():
 def test_spec_predicate_required():
     spec = IntentSpec(must_predicates=["only if premium"])
     msg = spec_predicate_required(_ctx(pred_sqls=["SELECT COUNT(*) FROM users"], intent_spec=spec))
-    assert msg and "WHERE" in msg or "FILTER" in msg or "条件" in msg
+    assert msg and (("WHERE" in msg) or ("FILTER" in msg) or ("条件" in msg))
 
 
 def test_spec_mgmt_artifacts_trigger():
@@ -318,7 +318,138 @@ def test_spec_unresolved_filter_risk():
     msg = spec_unresolved_filter_risk(
         _ctx(pred_sqls=["SELECT COUNT(*) FILTER (WHERE x=1) FROM users"], intent_spec=spec)
     )
-    assert msg and "evidence" in msg.lower() or "FILTER" in msg
+    assert msg and (("evidence" in msg.lower()) or ("FILTER" in msg))
+
+
+def test_spec_predicate_skips_dml():
+    spec = IntentSpec(must_predicates=["segment unique"])
+    msg = spec_predicate_required(
+        _ctx(
+            pred_sqls=[
+                "INSERT INTO customers (segment, currency) VALUES ('SME','EUR') "
+                "ON CONFLICT (segment, currency) DO UPDATE SET currency = EXCLUDED.currency "
+                "RETURNING customerid"
+            ],
+            intent_spec=spec,
+        )
+    )
+    assert msg is None
+
+
+def test_spec_output_arity_extra():
+    from optimization.rules.spec_rules import spec_output_arity_extra
+
+    q = "get both `transactionid` and `Segment` columns"
+    msg = spec_output_arity_extra(
+        _ctx(
+            query=q,
+            pred_sqls=["SELECT transactionid, amount, segment, currency FROM t"],
+        )
+    )
+    assert msg and "4" in msg
+
+
+def test_spec_output_arity_pass():
+    from optimization.rules.spec_rules import spec_output_arity_extra
+
+    q = "get both `transactionid` and `Segment` columns"
+    assert (
+        spec_output_arity_extra(
+            _ctx(query=q, pred_sqls=["SELECT transactionid, segment FROM t"])
+        )
+        is None
+    )
+
+
+def test_spec_pers_full_row_rejects_agg_only():
+    from optimization.rules.spec_rules import spec_pers_full_row
+
+    spec = IntentSpec(pers_need_full_row=True)
+    msg = spec_pers_full_row(
+        _ctx(
+            category="Personalization",
+            category_lower="personalization",
+            pred_sqls=["SELECT k, MIN(type) AS min_type FROM t GROUP BY k"],
+            intent_spec=spec,
+        )
+    )
+    assert msg and "代表行" in msg
+
+
+def test_spec_pers_full_row_distinct_on_pass():
+    from optimization.rules.spec_rules import spec_pers_full_row
+
+    spec = IntentSpec(pers_need_full_row=True)
+    assert (
+        spec_pers_full_row(
+            _ctx(
+                category="Personalization",
+                category_lower="personalization",
+                pred_sqls=["SELECT DISTINCT ON (k) * FROM t ORDER BY k, id"],
+                intent_spec=spec,
+            )
+        )
+        is None
+    )
+
+
+def test_spec_diagnosed_table_missing():
+    from optimization.intent_spec import Evidence
+    from optimization.rules.spec_rules import spec_diagnosed_table_missing
+
+    spec = IntentSpec(
+        evidence=[Evidence(table="trans", sample_note="diag_preferred")]
+    )
+    msg = spec_diagnosed_table_missing(
+        _ctx(pred_sqls=["SELECT account_id FROM loan"], intent_spec=spec)
+    )
+    assert msg and "trans" in msg
+
+
+def test_spec_issue_shape_no_ddl_escalation():
+    from optimization.rules.spec_rules import spec_issue_shape_no_ddl_escalation
+
+    msg = spec_issue_shape_no_ddl_escalation(
+        _ctx(
+            category="Query",
+            category_lower="query",
+            query="window function for next bank",
+            pred_sqls=["ALTER TABLE trans ADD COLUMN next_bank text", "SELECT 1"],
+            issue_sql=["SELECT first_value(bank) OVER (PARTITION BY account_id) FROM trans"],
+        )
+    )
+    assert msg and "ADD COLUMN" in msg
+
+
+def test_spec_dynamic_sql_single_stmt():
+    from optimization.rules.spec_rules import spec_dynamic_sql_single_stmt
+
+    msg = spec_dynamic_sql_single_stmt(
+        _ctx(
+            query="I tried to dynamically generate a SQL query",
+            pred_sqls=[
+                "SELECT 'SELECT o.a FROM account AS o' AS sqlstmt",
+                "SELECT o.district_id FROM account AS o",
+            ],
+        )
+    )
+    assert msg and "动态" in msg
+
+
+def test_spec_mgmt_column_type():
+    from optimization.rules.spec_rules import spec_mgmt_artifacts
+
+    spec = IntentSpec(mgmt_artifacts=["column_type"])
+    msg = spec_mgmt_artifacts(
+        _ctx(
+            category="Management",
+            category_lower="management",
+            query="convert column to timestamp type",
+            pred_sqls=["ALTER TABLE account ADD COLUMN date__timestamp timestamp"],
+            intent_spec=spec,
+        )
+    )
+    assert msg and "ALTER COLUMN" in msg
 
 
 if __name__ == "__main__":

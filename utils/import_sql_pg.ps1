@@ -1,4 +1,4 @@
-$BasePath = "D:\LearningMaterials\Slow SQL\BIRD-CRITIC-1\evaluation\postgre_table_dumps"
+$BasePath = Join-Path $PSScriptRoot "..\benchmark_data\dumps\postgresql"
 $PGUser = "root"
 $PGHost = "localhost"
 $PGPort = "5432"

@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Sequence
+from typing import List, Optional
 
 from optimization.intent_spec import IntentSpec
 from optimization.rules.base import Rule, RuleContext
 from optimization.rules.category import (
     mgmt_trigger_incomplete,
     personalization_group_key_only,
+)
+from optimization.sql_shape import (
+    is_ddl_or_dml,
+    issue_sql_is_readonly_select,
+    last_projection_arity,
+    looks_like_group_aggregate_only,
+    named_output_columns,
+    pred_has_add_column,
+    pred_has_alter_column_type,
+    query_is_dynamic_sql_generator,
+    tables_mentioned_in_sql,
 )
 
 
@@ -45,6 +56,8 @@ def spec_predicate_required(ctx: RuleContext) -> Optional[str]:
     if not spec:
         return None
     if not spec.agg_filters and not spec.must_predicates:
+        return None
+    if is_ddl_or_dml(ctx.pred_sqls):
         return None
     blob = "\n".join(str(s) for s in (ctx.pred_sqls or []))
     if re.search(
@@ -86,13 +99,19 @@ def spec_pers_full_row(ctx: RuleContext) -> Optional[str]:
     blob = "\n".join(str(s) for s in (ctx.pred_sqls or []))
     if re.search(r"\bDISTINCT\s+ON\b", blob, re.I):
         return None
+    if re.search(r"\bROW_NUMBER\s*\(", blob, re.I):
+        return None
     if re.search(
         r"JOIN\s*\(\s*SELECT\s+(?:MIN|MAX)\s*\(\s*\w+\s*\)",
         blob,
         re.I,
     ):
         return None
-    # 委托已有分组键否决
+    if looks_like_group_aggregate_only(ctx.pred_sqls):
+        return (
+            "Intent Spec：pers_need_full_row 需要分组代表行（DISTINCT ON / "
+            "ROW_NUMBER / JOIN MIN(id)），不要 GROUP BY 后只留聚合指标"
+        )
     return personalization_group_key_only(list(ctx.pred_sqls or []))
 
 
@@ -116,6 +135,79 @@ def spec_mgmt_artifacts(ctx: RuleContext) -> Optional[str]:
             re.I,
         ):
             return "Intent Spec：UPSERT 需 matching UNIQUE 索引/约束"
+    if "column_type" in arts:
+        if pred_has_add_column(ctx.pred_sqls) and not pred_has_alter_column_type(
+            ctx.pred_sqls
+        ):
+            return (
+                "Intent Spec：原地改列类型应 ALTER COLUMN ... TYPE，"
+                "不要只 ADD COLUMN 旁路"
+            )
+    return None
+
+
+def spec_output_arity_extra(ctx: RuleContext) -> Optional[str]:
+    """题面点名 ≥2 列时，末条投影勿附加未要求列。"""
+    names = named_output_columns(ctx.query or "")
+    if len(names) < 2:
+        return None
+    arity = last_projection_arity(ctx.pred_sqls)
+    if arity is None:
+        return None
+    if arity > len(names):
+        return (
+            f"输出契约：题面点名 {len(names)} 列 {names}，"
+            f"pred 投影约 {arity} 列，勿附加未要求列"
+        )
+    return None
+
+
+def spec_diagnosed_table_missing(ctx: RuleContext) -> Optional[str]:
+    """诊断明确换表时，pred 须引用 preferred evidence 表。"""
+    spec = _spec(ctx)
+    if not spec or not spec.evidence:
+        return None
+    preferred = [
+        e.table
+        for e in spec.evidence
+        if (e.sample_note or "") == "diag_preferred" and e.table
+    ]
+    if not preferred:
+        return None
+    used = tables_mentioned_in_sql(ctx.pred_sqls)
+    missing = [t for t in preferred if t.lower() not in used]
+    if missing:
+        return f"Intent Spec：诊断建议改用表 {missing[:5]}，pred 未引用"
+    return None
+
+
+def spec_issue_shape_no_ddl_escalation(ctx: RuleContext) -> Optional[str]:
+    """issue_sql 为只读 SELECT 时，Query pred 勿升级为 ADD COLUMN。"""
+    if ctx.category_lower != "query":
+        return None
+    if not issue_sql_is_readonly_select(getattr(ctx, "issue_sql", None)):
+        return None
+    q = (ctx.query or "").lower()
+    if re.search(r"add column|new column|alter table", q):
+        return None
+    if pred_has_add_column(ctx.pred_sqls):
+        return (
+            "issue_sql 是只读 SELECT：不要 ALTER TABLE ADD COLUMN；"
+            "用 SELECT 表达式产出列"
+        )
+    return None
+
+
+def spec_dynamic_sql_single_stmt(ctx: RuleContext) -> Optional[str]:
+    """动态生成 SQL 字符串的题，pred 不应再执行生成结果。"""
+    if not query_is_dynamic_sql_generator(ctx.query or ""):
+        return None
+    stmts = [str(s).strip() for s in (ctx.pred_sqls or []) if str(s).strip()]
+    if len(stmts) >= 2:
+        return (
+            "动态生成 SQL 题应只交付生成语句本身，"
+            "不要再执行生成出的 SELECT（会污染评测结果）"
+        )
     return None
 
 
@@ -149,5 +241,29 @@ SPEC_RULES: List[Rule] = [
         categories=frozenset({"management"}),
         source="spec",
         check=spec_mgmt_artifacts,
+    ),
+    Rule(
+        id="spec_output_arity_extra",
+        categories=frozenset(),
+        source="spec",
+        check=spec_output_arity_extra,
+    ),
+    Rule(
+        id="spec_diagnosed_table_missing",
+        categories=frozenset(),
+        source="spec",
+        check=spec_diagnosed_table_missing,
+    ),
+    Rule(
+        id="spec_issue_shape_no_ddl_escalation",
+        categories=frozenset({"query"}),
+        source="spec",
+        check=spec_issue_shape_no_ddl_escalation,
+    ),
+    Rule(
+        id="spec_dynamic_sql_single_stmt",
+        categories=frozenset(),
+        source="spec",
+        check=spec_dynamic_sql_single_stmt,
     ),
 ]

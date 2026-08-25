@@ -245,6 +245,7 @@ def run_single_instance(
             efficiency=efficiency if isinstance(efficiency, bool) else None,
             llm_config=(opt_cfg.get("llm") or {}),
             use_llm=mode != "diag_only",
+            issue_sql=issue_sql,
         )
         result.meta["intent_spec"] = intent_spec.summary()
 

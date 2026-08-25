@@ -87,6 +87,10 @@ _EXECUTION_ORDER = [
     "spec_unresolved_filter_risk",
     "spec_pers_full_row",               # personalization
     "spec_mgmt_artifacts",              # management
+    "spec_output_arity_extra",
+    "spec_diagnosed_table_missing",
+    "spec_issue_shape_no_ddl_escalation",
+    "spec_dynamic_sql_single_stmt",
     "query_time_format_mismatch",       # query（flash 单题）
     "conditional_count_without_filter", # query
     "table_count_uses_count_column",    # query（flash 单题）

@@ -1,4 +1,4 @@
-"""短实验：沙箱模板缓存耗时 + 两槽位隔离。不跑 val28/hard40/flash 批量。"""
+"""短实验：沙箱模板缓存耗时 + 两槽位隔离。不跑大批量评测。"""
 
 from __future__ import annotations
 
@@ -193,7 +193,7 @@ def _try_dialect(dialect: str, db_id: str) -> bool:
 
 def main() -> None:
     logger = setup_logger()
-    logger.info("smoke_sandbox_template：单方言、4 槽位隔离，禁止 val28 批量")
+    logger.info("smoke_sandbox_template：单方言、4 槽位隔离，禁止大批量评测")
     cfg = template_cache_config()
     logger.info(f"template_cache={cfg}")
     attempts = [

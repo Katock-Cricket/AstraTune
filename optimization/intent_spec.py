@@ -87,6 +87,7 @@ class IntentSpec:
             "goal": self.goal,
             "output_columns_n": len(self.output_columns),
             "agg_filters_n": len(self.agg_filters),
+            "mgmt_artifacts_n": len(self.mgmt_artifacts),
             "pers_need_full_row": self.pers_need_full_row,
             "empty": self.is_empty(),
         }
@@ -206,6 +207,7 @@ def extract_intent_spec_heuristic(
     diagnosis_report: str,
     schema: str,
     efficiency: Optional[bool] = None,
+    issue_sql: Optional[List[str]] = None,
 ) -> IntentSpec:
     """无 LLM 的启发式 Spec（测试与 fail-open 兜底）。"""
     q = (query or "").lower()
@@ -214,7 +216,7 @@ def extract_intent_spec_heuristic(
 
     # Pers：代表行
     if spec.goal == "pers" and re.search(
-        r"each|every|per\s+\w+|one row|完整|代表|group", q, re.I
+        r"each|every|per\s+\w+|one row|完整|代表|group|unique", q, re.I
     ):
         spec.pers_need_full_row = True
 
@@ -224,15 +226,11 @@ def extract_intent_spec_heuristic(
             AggFilter(text="conditional count filter", unresolved=True)
         )
 
-    # Mgmt artifacts
+    # Mgmt artifacts（题面 + issue_sql）
     if spec.goal == "mgmt":
-        if re.search(r"trigger|function|procedure", q, re.I):
-            if re.search(r"trigger", q, re.I):
-                spec.mgmt_artifacts.append("trigger")
-            if re.search(r"function|procedure", q, re.I):
-                spec.mgmt_artifacts.append("function")
-        if re.search(r"unique|on conflict|upsert", q, re.I):
-            spec.mgmt_artifacts.append("unique_index")
+        from optimization.sql_shape import infer_mgmt_artifacts
+
+        spec.mgmt_artifacts = infer_mgmt_artifacts(query or "", issue_sql)
 
     # schema 表名列名 → evidence
     for m in re.finditer(
@@ -249,6 +247,16 @@ def extract_intent_spec_heuristic(
         col = m.group(1) or m.group(2)
         if col and spec.evidence:
             spec.evidence[0].columns_seen.append(col.lower())
+
+    from optimization.sql_shape import named_output_columns, preferred_tables_from_diagnosis
+
+    for name in named_output_columns(query or ""):
+        spec.output_columns.append(OutputColumn(name=name, role="payload"))
+
+    for tbl in preferred_tables_from_diagnosis(diag, issue_sql, schema or ""):
+        spec.evidence.append(
+            Evidence(table=tbl, columns_seen=[], sample_note="diag_preferred")
+        )
 
     return spec
 
@@ -320,14 +328,16 @@ def extract_intent_spec(
     efficiency: Optional[bool] = None,
     llm_config: Optional[Dict[str, Any]] = None,
     use_llm: bool = True,
+    issue_sql: Optional[List[str]] = None,
 ) -> IntentSpec:
-    """合并启发式 + 可选 LLM；LLM 字段覆盖启发式空项。"""
+    """合并启发式 + 可选 LLM。类目 goal / 诊断换表 / 点名输出列以启发式为准。"""
     base = extract_intent_spec_heuristic(
         query=query,
         category=category,
         diagnosis_report=diagnosis_report,
         schema=schema,
         efficiency=efficiency,
+        issue_sql=issue_sql,
     )
     if not use_llm or not llm_config:
         return base
@@ -341,16 +351,25 @@ def extract_intent_spec(
     )
     if llm_spec.is_empty():
         return base
-    # LLM 为主，保留启发式独有信号
     merged = llm_spec
-    if base.pers_need_full_row and not merged.pers_need_full_row:
+    merged.goal = base.goal
+    if base.pers_need_full_row:
         merged.pers_need_full_row = True
     if base.agg_filters and not merged.agg_filters:
         merged.agg_filters = list(base.agg_filters)
-    if base.mgmt_artifacts and not merged.mgmt_artifacts:
-        merged.mgmt_artifacts = list(base.mgmt_artifacts)
-    if base.evidence and not merged.evidence:
+    seen_art = {a.lower() for a in merged.mgmt_artifacts}
+    for a in base.mgmt_artifacts:
+        if a.lower() not in seen_art:
+            merged.mgmt_artifacts.append(a)
+            seen_art.add(a.lower())
+    if base.output_columns:
+        merged.output_columns = list(base.output_columns)
+    pref = [e for e in base.evidence if e.sample_note == "diag_preferred"]
+    if pref:
+        have = {e.table.lower() for e in merged.evidence}
+        for e in pref:
+            if e.table.lower() not in have:
+                merged.evidence.append(e)
+    elif base.evidence and not merged.evidence:
         merged.evidence = list(base.evidence)
-    if not merged.goal:
-        merged.goal = base.goal
     return merged

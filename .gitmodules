@@ -1,0 +1,3 @@
+[submodule "Diff-SQL"]
+	path = Diff-SQL
+	url = https://github.com/L-nshpp/Diff-SQL.git

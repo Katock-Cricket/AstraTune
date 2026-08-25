@@ -7,6 +7,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_INERROR
 
 from sandbox.executor import DBExecutor
 from utils.logger import default_logger
+from utils.pg_jsonb_array import is_jsonb_array_type_error, wrap_array_literals_as_jsonb
 from utils.sql_wrap import split_sql_statements
 
 
@@ -76,12 +77,15 @@ class PGExecutor(DBExecutor):
             f"成功连接到PostgreSQL数据库: {self.config.get('host')}:{self.config.get('port')}"
         )
     
-    def execute(self, sql: str, fetch: bool = True) -> Optional[List[Dict[str, Any]]]:
+    def execute(
+        self, sql: str, fetch: bool = True, *, _jsonb_coerced: bool = False
+    ) -> Optional[List[Dict[str, Any]]]:
         """
         执行SQL语句, 并测量执行时间
         
         支持多语句执行(用分号分隔),会依次执行每条语句并返回所有结果
         每条语句的结果中都包含执行时间(秒)
+        jsonb 列误用 ARRAY 字面量时自动 to_jsonb 重试一次。
         """
         if not self.connection or getattr(self.connection, "closed", 1):
             self.connect()
@@ -170,6 +174,11 @@ class PGExecutor(DBExecutor):
                     self.connect()
                 except Exception:
                     pass
+            if not _jsonb_coerced and is_jsonb_array_type_error(str(e)):
+                rewritten = wrap_array_literals_as_jsonb(sql)
+                if rewritten != sql:
+                    default_logger.info("jsonb 列遇 ARRAY 字面量，改写为 to_jsonb 后重试")
+                    return self.execute(rewritten, fetch=fetch, _jsonb_coerced=True)
             raise
     
     def close(self) -> None:

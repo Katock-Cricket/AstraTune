@@ -453,6 +453,7 @@ class Verifier:
                     preprocess_sql=list(self.preprocess_sql or []),
                     rows=rows,
                     intent_spec=self.intent_spec,
+                    issue_sql=list(issue_sql or []),
                 )
                 for rule in rules_for(ctx.category_lower, ctx.is_efficiency):
                     msg = rule.check(ctx)

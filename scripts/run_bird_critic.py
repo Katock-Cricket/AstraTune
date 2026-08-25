@@ -150,8 +150,8 @@ def load_records(args, dialect: str) -> List[Dict[str, Any]]:
     if not usable:
         raise SystemExit(
             "过滤后无可用记录（需要 issue_sql）。"
-            "Flash 请使用 --schema flash_schema.jsonl "
-            "--input flash/flash-00000-of-00001.jsonl"
+            "Flash 请使用 --schema benchmark_data/schema/flash_schema.jsonl "
+            "--input benchmark_data/input/flash/flash-00000-of-00001.jsonl"
         )
 
     if args.ids:

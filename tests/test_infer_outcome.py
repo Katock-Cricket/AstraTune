@@ -1,4 +1,4 @@
-"""推理交付：fallback 不清空 pred；hard_fail 仅真空候选。"""
+"""推理交付与 JSONL IO：fallback 不清空 pred；hard_fail 仅真空候选。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.run_bird_critic import (
+from utils.batch_records import (
+    fallback_row,
     finalize_inference_record,
     has_pred_sqls,
     is_inference_success,
-    _timeout_row,
 )
 from utils.pipeline import dedupe_jsonl_by_id, dump_jsonl, load_jsonl
 
@@ -68,7 +68,10 @@ def test_dump_jsonl_atomic_roundtrip():
         assert not path.with_name(path.name + ".tmp").exists()
         got = load_jsonl(path)
         assert got[0]["pred_sqls"] == ["A"]
-        assert json.loads(path.read_text(encoding="utf-8").splitlines()[1])["instance_id"] == 2
+        assert (
+            json.loads(path.read_text(encoding="utf-8").splitlines()[1])["instance_id"]
+            == 2
+        )
 
 
 def test_timeout_row_keeps_prior_pred():
@@ -78,7 +81,9 @@ def test_timeout_row_keeps_prior_pred():
         "diagnosis_report": "diag",
         "optimization_meta": {"rounds": 2},
     }
-    out = _timeout_row(rec, "instance_timeout_2400s", mode="diag+opt", prior_pred=prior)
+    out = fallback_row(
+        rec, "instance_timeout_2400s", mode="diag+opt", prior_pred=prior
+    )
     assert out["pred_sqls"] == ["SELECT 2"]
     assert out["optimization_meta"]["fallback"] is True
     assert out["optimization_meta"]["hard_fail"] is False
@@ -97,11 +102,3 @@ def test_dedupe_jsonl_by_id():
         by = {r["instance_id"]: r for r in got}
         assert by[1]["pred_sqls"] == ["b"]
         assert by[2]["pred_sqls"] == ["c"]
-
-
-if __name__ == "__main__":
-    test_fallback_keeps_pred()
-    test_empty_pred_is_hard_fail()
-    test_verify_pass_not_hard_fail()
-    test_dump_jsonl_atomic_roundtrip()
-    print("all infer outcome tests passed")

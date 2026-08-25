@@ -20,7 +20,7 @@ def parse_args():
     p.add_argument(
         "--sol",
         required=True,
-        help="gold sol JSONL（如 pg_sol.jsonl / flash_sol / open_sol.jsonl）",
+        help="gold sol JSONL（如 benchmark_data/sol/pg_sol/pg_sol.jsonl）",
     )
     p.add_argument("--output", required=True, help="评测用 eval_ready JSONL")
     p.add_argument(

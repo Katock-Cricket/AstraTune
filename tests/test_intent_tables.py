@@ -23,26 +23,3 @@ def test_no_false_positive_on_english_orders():
     schema = 'CREATE TABLE "order" (b int); CREATE TABLE "users" (id int);'
     # 未以 table named / from 等形式点名 order 表时不应强加
     assert missing_intent_tables(q, schema, ["SELECT 1"]) == []
-
-
-def test_personalization_group_key_only():
-    from optimization.verify import personalization_group_key_only
-
-    assert personalization_group_key_only(
-        ["SELECT artist FROM cards GROUP BY artist"]
-    )
-    assert (
-        personalization_group_key_only(
-            [
-                "SELECT t.* FROM cards t JOIN (SELECT min(id) AS id FROM cards GROUP BY artist) x ON t.id = x.id"
-            ]
-        )
-        is None
-    )
-
-
-if __name__ == "__main__":
-    test_missing_order_table()
-    test_no_false_positive_on_english_orders()
-    test_personalization_group_key_only()
-    print("ok")
