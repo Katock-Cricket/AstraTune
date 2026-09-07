@@ -1,6 +1,6 @@
 # AstraTune — Agent 工作指南
 
-> 供后续 Agent 快速初始化上下文。细节与进度以 `docs/过程文档.md` 为准；机制以 `docs/架构说明书.md` 为准；准确率以 `docs/spec_acc.md` + `docs/pg530评测报告.md` 为准。P0/P1 历史规格已收敛进过程文档与架构说明书（仓库内不再单独维护 `spec_p0.md` / `spec_p1.md`）。
+> 供后续 Agent 快速初始化上下文。细节与进度以 `docs/过程文档.md` 为准；机制以 `docs/架构说明书.md` 为准；准确率以 `docs/spec_acc.md` + `docs/pg530评测报告.md` 为准；Effi 正式全量见 `docs/effi300评测报告.md`（小规模对照 `docs/effi16评测报告.md`）。P0/P1 历史规格已收敛进过程文档与架构说明书（仓库内不再单独维护 `spec_p0.md` / `spec_p1.md`）。
 
 ## 项目是什么
 
@@ -62,7 +62,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | `utils/effi_adapter.py` | Effi-SQL 题面 ↔ 推理记录 |
 | `scripts/infer.py` | **唯一单条 CLI**（`--function` / `--mode` / `--benchmark effi`） |
 | `scripts/run_bird_critic.py` | BIRD 批量推理编排（默认 subprocess 隔离） |
-| `scripts/run_effi_sql.py` / `run_effi_eval.py` | Effi 批推理 + Diff-SQL end2end |
+| `scripts/run_effi_sql.py` / `run_effi_worker.py` / `run_effi_eval.py` | Effi 批推理（默认 subprocess）+ Diff-SQL end2end |
 | `scripts/run_bird_worker.py` | 单题子进程 worker |
 | `scripts/slim_pred_jsonl.py` | pred JSONL 去重 + slim |
 | `sandbox/` | PG/MySQL 执行器、`SandboxManager`、`statistics.py`、模板缓存 |
@@ -78,14 +78,29 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | `docs/环境搭建.md` | 跨平台启动 |
 | `docs/spec_acc.md` | **准确率规格（PG 530 正式 51.13%）** |
 | `docs/pg530评测报告.md` | **PG 530 官方评测（51.13%）** |
+| `docs/effi300评测报告.md` | **Effi-SQL 全量 300（match 91.7% / R-VES 0.7642）** |
+| `docs/effi16评测报告.md` | Effi-SQL 16 题小规模（match 93.8% / R-VES 0.7500） |
 | `docs/架构说明书.md` | **模块实现与机制（权威）** |
 | `docs/评测对接.md` | BIRD merge+wrapper；**Effi §4**；**`--limit` 必读 §2.1** |
+
+## 全局规则（最高优先级）
+
+### R1 · 文档-测试-代码始终对齐
+
+1. **任何架构级改动与代码改动完成后**：必须对照《架构说明书》《过程文档》《环境搭建》《评测对接》，同步更新所有受影响文档——更新版本号与修订说明，不得留下"代码先行、文档欠账"。
+2. **收到任何新需求后**：不需要等待用户发令，直接评估并同步更新相关文档，再进入实现。
+3. **测试用例集建立后**：任何代码改动必须同步新增或更新对应测试用例；无测试的改动视为未完成。
+4. **完成的定义（DoD）**：代码合入 + 测试通过 + 文档同步，四项缺一不可。
+
+### R2 · 决策必须落档
+
+任何偏离正式文档的实现选择、用户口头拍板或审核同意的新决策，必须登记：架构/算法级 → 架构说明书；计划级 → 过程文档。测试与评测同理。**没有落档的决策视为不存在。**
 
 ## 开发优先级
 
 - **P0 / P1**：已完成（Generate–Verify、批跑工程、并发/对齐/消融）
 - **准确率**：**PG 530 正式 51.13%（271/530）** — 见 `docs/pg530评测报告.md`；机制见 `docs/架构说明书.md`
-- **后续**：继续 dig PG530 剩余失败；**Effi-SQL 全量 R-VES**（兼容链路已通，见 `docs/评测对接.md` §4）；Open-MySQL 全量延后
+- **后续**：Effi 未 match dig（25 题）；Open-MySQL 全量延后。Effi 全量正式成绩见 `docs/effi300评测报告.md`（链路 `docs/评测对接.md` §4）
 - **P2**：WebUI（AstraTune 与 BIRD evaluation 两套 Docker **保持独立**，不合并）
 
 ## 约定

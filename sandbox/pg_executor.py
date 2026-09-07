@@ -22,6 +22,12 @@ def _is_transient_pg_error(msg: str) -> bool:
     )
 
 
+def regclass_cast_name(table_name: str) -> str:
+    """供 `::regclass` 使用的名称：保留大小写需内嵌双引号（如 \"Equipment\"）。"""
+    raw = (table_name or "").strip().strip('"')
+    return '"' + raw.replace('"', '""') + '"'
+
+
 class PGExecutor(DBExecutor):
     """PostgreSQL数据库执行器"""
     
@@ -128,16 +134,39 @@ class PGExecutor(DBExecutor):
                     
                     # 判断是否是查询语句(去掉注释行再提取首字)
                     if fetch and re.sub(r'--.*', '', stmt).strip().upper().startswith(('SELECT', 'SHOW', 'EXPLAIN', 'WITH')):
-                        result = cursor.fetchall()
+                        max_rows = 0
+                        try:
+                            max_rows = int(self.config.get("max_fetch_rows") or 0)
+                        except (TypeError, ValueError):
+                            max_rows = 0
+                        truncated = False
+                        if max_rows > 0:
+                            result = cursor.fetchmany(max_rows + 1)
+                            if len(result) > max_rows:
+                                truncated = True
+                                result = result[:max_rows]
+                                # 勿再 fetch 排空（TPC-H 千万行会再次撑爆）；回滚丢弃剩余结果
+                                try:
+                                    self.connection.rollback()
+                                except Exception:
+                                    pass
+                        else:
+                            result = cursor.fetchall()
                         # 将RealDictRow转换为普通字典
                         result_dicts = [dict(row) for row in result]
-                        all_results.append({
+                        item = {
                             "sql": stmt,
                             "rows": result_dicts,
                             "row_count": len(result_dicts),
                             "execution_time": round(execution_time, 4),  # 秒,保留4位小数
                             "execution_time_ms": round(execution_time * 1000, 2)  # 毫秒,保留2位小数
-                        })
+                        }
+                        if truncated:
+                            item["truncated"] = True
+                            default_logger.warning(
+                                f"查询结果截断至 max_fetch_rows={max_rows}，避免全量物化撑爆内存"
+                            )
+                        all_results.append(item)
                         default_logger.debug(f"查询执行时间: {execution_time:.4f}秒 ({execution_time * 1000:.2f}ms)")
                     else:
                         # 非查询语句,返回影响的行数
@@ -315,6 +344,7 @@ class PGExecutor(DBExecutor):
     def get_sequence_create_ddls(self, table_name: str) -> List[str]:
         """为表关联序列生成 CREATE SEQUENCE（建表前执行）。"""
         resolved = self.resolve_table_name(table_name) or table_name
+        reg = regclass_cast_name(resolved)
         sql = """
             SELECT DISTINCT
                 quote_ident(n.nspname) AS schema_ident,
@@ -336,7 +366,7 @@ class PGExecutor(DBExecutor):
         ddls: List[str] = []
         try:
             with self.connection.cursor() as cur:
-                cur.execute(sql, (resolved,))
+                cur.execute(sql, (reg,))
                 for row in cur.fetchall() or []:
                     schema_ident, seq_ident, start, inc, mx, mn, cache, cycle = row
                     cycle_sql = "CYCLE" if cycle else "NO CYCLE"
@@ -355,6 +385,7 @@ class PGExecutor(DBExecutor):
     def get_sequence_owned_by_ddls(self, table_name: str) -> List[str]:
         """建表后恢复 OWNED BY，并尽力 setval。"""
         resolved = self.resolve_table_name(table_name) or table_name
+        reg = regclass_cast_name(resolved)
         sql = """
             SELECT
                 n.nspname AS seq_schema,
@@ -370,7 +401,7 @@ class PGExecutor(DBExecutor):
         ddls: List[str] = []
         try:
             with self.connection.cursor() as cur:
-                cur.execute(sql, (resolved,))
+                cur.execute(sql, (reg,))
                 for seq_schema, seq_name, col_name in cur.fetchall() or []:
                     seq_qual = f'"{seq_schema}"."{seq_name}"'
                     col_qual = f'"{resolved}"."{col_name}"'
@@ -400,6 +431,7 @@ class PGExecutor(DBExecutor):
         """获取表的CREATE TABLE语句（列名 quote_ident，兼容 PG 12+）。"""
         try:
             resolved = self.resolve_table_name(table_name) or table_name
+            reg = regclass_cast_name(resolved)
             sql = """
             SELECT 
                 'CREATE TABLE ' || quote_ident(%s) || ' (' ||
@@ -455,7 +487,7 @@ class PGExecutor(DBExecutor):
             """
             
             with self.connection.cursor() as cur:
-                cur.execute(sql, (resolved, resolved, resolved))
+                cur.execute(sql, (resolved, reg, reg))
                 result = cur.fetchone()
                 
                 if not result or not result[0]:

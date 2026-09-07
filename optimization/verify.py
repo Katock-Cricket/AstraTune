@@ -222,10 +222,14 @@ class Verifier:
             except Exception:
                 pass
 
-    def _run_sqls(self, sqls: List[str]) -> Tuple[List[Any], float, Optional[str]]:
-        """对 body 做 preprocess→body→cleanup 包裹后执行；返回 (最后可比较结果行, latency_ms, error)。"""
+    def _run_sqls(self, sqls: List[str]) -> Tuple[List[Any], float, Optional[str], bool]:
+        """对 body 做 preprocess→body→cleanup 包裹后执行。
+
+        返回 (最后可比较结果行, latency_ms, error, truncated)。
+        truncated=True 表示结果被 max_fetch_rows 截断，Soft EX 应跳过。
+        """
         if not self.execute_fn:
-            return [], 0.0, "execute_fn 未配置"
+            return [], 0.0, "execute_fn 未配置", False
         with timed_stage("sql_wrap", body_stmts=len(sqls)):
             wrapped = wrap_with_pre_post(
                 sqls,
@@ -239,7 +243,7 @@ class Verifier:
                 results = self.execute_fn(sql_text) or []
         except Exception as e:
             latency = (time.perf_counter() - t0) * 1000.0
-            return [], latency, str(e)
+            return [], latency, str(e), False
         latency = (time.perf_counter() - t0) * 1000.0
 
         # 取「body 段」最后带 rows 的结果，避免被 cleanup 的空结果覆盖语义
@@ -248,16 +252,21 @@ class Verifier:
         body_slice = results[pre_n : pre_n + body_n] if body_n else results
 
         rows: List[Any] = []
+        truncated = False
         for item in body_slice:
             if isinstance(item, dict) and "rows" in item:
                 rows = list(item.get("rows") or [])
+                if item.get("truncated"):
+                    truncated = True
         if not rows:
             for item in results:
                 if isinstance(item, dict) and "rows" in item:
                     rows = list(item.get("rows") or [])
+                    if item.get("truncated"):
+                        truncated = True
 
         self._mark_clean_if_restored()
-        return rows, latency, None
+        return rows, latency, None, truncated
 
     def _measure_cost(self, sqls: List[str]) -> Optional[float]:
         if not self.explain_fn:
@@ -350,11 +359,17 @@ class Verifier:
 
         if soft_ex_applicable:
             try:
-                issue_rows, _, err = self._run_sqls(issue_sql)
+                issue_rows, _, err, truncated = self._run_sqls(issue_sql)
                 if err:
                     soft_ex_applicable = False
                     issue_rows = None
                     default_logger.warning(f"issue_sql Soft EX 基线失败，跳过功能对比: {err}")
+                elif truncated:
+                    soft_ex_applicable = False
+                    issue_rows = None
+                    default_logger.warning(
+                        "issue_sql Soft EX 基线被 max_fetch_rows 截断，跳过功能对比（防 OOM）"
+                    )
             except Exception as e:
                 soft_ex_applicable = False
                 issue_rows = None
@@ -389,7 +404,7 @@ class Verifier:
             latency_ms: Optional[float] = None
             passed = True
 
-            rows, latency_ms, err = self._run_sqls(cand.pred_sqls)
+            rows, latency_ms, err, truncated = self._run_sqls(cand.pred_sqls)
             if err:
                 passed = False
                 hint = ""
@@ -417,7 +432,12 @@ class Verifier:
             # Soft EX
             if passed and soft_ex_applicable and issue_rows is not None:
                 # 仅当候选末条可产生结果集时比较；Management 已 skipped
-                if any(_is_selectish(s) for s in cand.pred_sqls):
+                if truncated:
+                    soft_ex = "skipped"
+                    default_logger.warning(
+                        f"[{cand.id}] Soft EX 候选结果被截断，跳过功能对比"
+                    )
+                elif any(_is_selectish(s) for s in cand.pred_sqls):
                     if soft_ex_equal(rows, issue_rows):
                         soft_ex = "pass"
                     else:

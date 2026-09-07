@@ -4,7 +4,9 @@
     "host": "127.0.0.1",
     "port": 7001,
     "user": "root",
-    "password": "123456"
+    "password": "123456",
+    "statement_timeout_ms": 120000,
+    "max_fetch_rows": 20000
   },
   "tpch": {
     "dialect": "postgresql",
@@ -12,7 +14,9 @@
     "port": 5438,
     "user": "postgres",
     "password": "123456",
-    "database": "tpch_3g"
+    "database": "tpch_3g",
+    "statement_timeout_ms": 180000,
+    "max_fetch_rows": 5000
   },
   "databases": {
     "solar_panel": "small",

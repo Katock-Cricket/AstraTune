@@ -1,10 +1,12 @@
 #!/usr/bin/env pwsh
 # 压缩 Docker Desktop WSL 虚拟磁盘（docker_data.vhdx）
-# 使用前须：docker compose down + 退出 Docker Desktop + wsl --shutdown
-# 需要管理员权限
+# 使用前须：docker compose down →（可选 docker builder prune）→ 启动 Docker 执行 fstrim：
+#   wsl -d docker-desktop -u root -- fstrim -v /mnt/docker-desktop-disk
+# → 退出 Docker Desktop → wsl --shutdown → 本脚本（管理员）
+# 默认路径来自 settings-store.json 的 CustomWslDistroDir（本机 D:\DockerDesktopWSL）
 
 param(
-    [string]$VhdxPath = "D:\Docker_wsl\DockerDesktopWSL\disk\docker_data.vhdx",
+    [string]$VhdxPath = "D:\DockerDesktopWSL\disk\docker_data.vhdx",
     [switch]$SkipAdminCheck
 )
 

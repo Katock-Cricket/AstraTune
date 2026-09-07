@@ -55,8 +55,10 @@ def _inject_pg_statistics(
     table_name: str,
 ) -> Dict[str, Any]:
     report: Dict[str, Any] = {"ok": [], "fail": [], "skip": []}
-    # regclass 必须用字符串字面量；双引号标识符会被解析成列引用
-    rel_lit = _sql_literal(table_name)
+    # regclass 必须用字符串字面量；CamelCase 需内嵌双引号（'"Equipment"'::regclass）
+    from sandbox.pg_executor import regclass_cast_name
+
+    rel_lit = _sql_literal(regclass_cast_name(table_name))
     rel_ident = _quote_ident(table_name)
     try:
         table_stats = _first_rows(
