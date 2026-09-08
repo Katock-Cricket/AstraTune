@@ -88,4 +88,4 @@
 1. **小规模 16 题官方 match 93.8%（15/16），R-VES 0.7500**；唯一失配是空 pred 的 tpch#1。
 2. 三套 smalldb（solar / robot / polar）**全部 match**；tpch 3/4，短板仍是超大结果集题的推理稳定性。
 3. Reward（13）低于 Match（15）：两题 match 但 speedup 仅略大于 1（#230、#245），符合 Diff-SQL 计分分段。
-4. **全量已完成**：见 [`docs/effi300评测报告.md`](effi300评测报告.md)（match 91.7% / R-VES 0.7642）。
+4. **全量已完成**：见 [`docs/effi300评测报告.md`](effi300评测报告.md)（match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814）。

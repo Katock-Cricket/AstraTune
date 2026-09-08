@@ -1,6 +1,6 @@
 # AstraTune — Agent 工作指南
 
-> 供后续 Agent 快速初始化上下文。细节与进度以 `docs/过程文档.md` 为准；机制以 `docs/架构说明书.md` 为准；准确率以 `docs/spec_acc.md` + `docs/pg530评测报告.md` 为准；Effi 正式全量见 `docs/effi300评测报告.md`（小规模对照 `docs/effi16评测报告.md`）。P0/P1 历史规格已收敛进过程文档与架构说明书（仓库内不再单独维护 `spec_p0.md` / `spec_p1.md`）。
+> 供后续 Agent 快速初始化上下文。细节与进度以 `docs/过程文档.md` 为准；机制以 `docs/架构说明书.md` 为准；准确率以 `docs/spec_acc.md` + `docs/pg530评测报告.md` 为准；**Effi 全量评测已完成**：`docs/effi300评测报告.md`（小规模对照 `docs/effi16评测报告.md`）。P0/P1 历史规格已收敛进过程文档与架构说明书（仓库内不再单独维护 `spec_p0.md` / `spec_p1.md`）。
 
 ## 项目是什么
 
@@ -11,7 +11,8 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 1. **诊断智能体**（ReAct + 沙箱）— **已调通**
 2. **修复多智能体**（Generate–Verify，无 Reflect）— **已完成**
 3. **BIRD-CRITIC 评测跑批** — **PG 530 正式全量 51.13%（271/530）**；Open-MySQL 全量仍延后
-4. **WebUI**（单条 SQL：诊断→优化→`pred_sqls`）— **未实现（P2）**
+4. **Effi-SQL 性能评测** — **全量正式已完成**（match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814；见 `docs/effi300评测报告.md`）
+5. **WebUI**（单条 SQL：诊断→优化→`pred_sqls`）— **未实现（P2）**
 
 ## 已砍掉 / 冻结（勿再实现）
 
@@ -78,8 +79,8 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | `docs/环境搭建.md` | 跨平台启动 |
 | `docs/spec_acc.md` | **准确率规格（PG 530 正式 51.13%）** |
 | `docs/pg530评测报告.md` | **PG 530 官方评测（51.13%）** |
-| `docs/effi300评测报告.md` | **Effi-SQL 全量 300（match 91.7% / R-VES 0.7642）** |
-| `docs/effi16评测报告.md` | Effi-SQL 16 题小规模（match 93.8% / R-VES 0.7500） |
+| `docs/effi300评测报告.md` | **Effi-SQL 全量 300（已完成；match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814）** |
+| `docs/effi16评测报告.md` | Effi-SQL 16 题小规模对照（match 93.8% / R-VES 0.7500） |
 | `docs/架构说明书.md` | **模块实现与机制（权威）** |
 | `docs/评测对接.md` | BIRD merge+wrapper；**Effi §4**；**`--limit` 必读 §2.1** |
 
@@ -100,8 +101,9 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 
 - **P0 / P1**：已完成（Generate–Verify、批跑工程、并发/对齐/消融）
 - **准确率**：**PG 530 正式 51.13%（271/530）** — 见 `docs/pg530评测报告.md`；机制见 `docs/架构说明书.md`
-- **后续**：Effi 未 match dig（25 题）；Open-MySQL 全量延后。Effi 全量正式成绩见 `docs/effi300评测报告.md`（链路 `docs/评测对接.md` §4）
-- **P2**：WebUI（AstraTune 与 BIRD evaluation 两套 Docker **保持独立**，不合并）
+- **Effi-SQL**：**全量评测已完成** — `docs/effi300评测报告.md`（链路 `docs/评测对接.md` §4）；**后续**为未 match dig（25 题）
+- **延后**：Open-MySQL 全量
+- **P2**：WebUI（AstraTune / BIRD evaluation / Diff-SQL **三套 Docker 保持独立**，不合并）
 
 ## 约定
 
@@ -109,7 +111,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 - 勿擅自提交 git / push，除非用户明确要求。
 - 勿引入 RAG、微调管线、达梦实现。
 - 诊断结论标记：`【诊断结论】`；评测交付字段：`pred_sqls`（`list[str]`）。
-- LLM：`config/agents.json` + **`OPENAI_API_KEY` / `OPENAI_API_KEYS`**（`;` 分隔）；当前 `llm_key_mode=auto`，`llm_workers=4`。批跑沙箱 `--workers` 与 LLM 池独立。默认 `--isolate subprocess`。
+- LLM：`config/agents.json` + **`OPENAI_API_KEY` / `OPENAI_API_KEYS`**（`;` 分隔）；当前 `llm_key_mode=single`，`llm_workers=16`（loader fallback 仍为 `auto`）。批跑沙箱 `--workers` 与 LLM 池独立。默认 `--isolate subprocess`。
 - 单条示例见 `data/测试数据.md`；`--db-id` 可覆盖目标库名。
 - **改规则/纯函数先补特征测试再动手**：`tests/`（`pytest tests/ -q`，无需 DB）；新机制进独立模块（`intent_spec` / `consensus` / `spec_rules` / `eff_risk`），**勿**往 `verify.py` / `prompts.py` 堆 patch；`flash_overfit.py` **冻结新增**
 - 单条推理改动统一改 `utils/inference_runner.py`；CLI（`infer.py` / 批跑 worker）只是薄壳，勿在壳里加逻辑。`diag.py`/`opt.py` 已删除，由 `--mode` 替代。

@@ -1,10 +1,12 @@
 # Effi-SQL 全量 300 官方评测报告
 
+> **评测状态**：**已完成**（正式成绩锚定本报告）  
 > **正式评测**：2026-08-27 15:07（UTC+8）— **match_rate 91.7%（275/300）**；**R-VES 0.7642（76.42%）**；**Coverage@2x 55.67%**；**GMS 4.0814**  
 > **链路**：`run_effi_sql.py`（`--function efficiency --mode diag+opt`，`--isolate subprocess`）→ Diff-SQL `eval_postgresql_execution.py`（`EVAL_SQL_MODE=end2end`）→ `_aggregate_metrics.py`（R-VES）+ 同产物回放 Coverage@2x / GMS（BIRD 榜单口径）  
 > **评测范围**：JSONL **全量 300 条**（`benchmark_data/effi/input/effi-sql-pg.jsonl`）  
 > **评测库**：Diff-SQL smalldb `:7001` / TPC-H `:5438`  
 > **配置**：`llm_key_mode=single`；批跑 `--workers 4`（每库至多 1 路在飞）；子进程各 1 LLM 槽；`instance_timeout_s=2400`（空 pred 补跑加长至 4800）
+> **文档收口**：2026-09-07 标记评测完成，并同步 Coverage@2x / GMS 与过程/架构文档
 
 ---
 

@@ -1,8 +1,8 @@
 # AstraTune 准确率规格（PG 530）
 
-> **状态**：**PG 530 正式全量 51.13%（271/530）**；机制见 `docs/架构说明书.md`  
-> **日期**：2026-08-25  
-> **关联**：`docs/pg530评测报告.md`；`docs/架构说明书.md`；`AGENTS.md`
+> **状态**：**PG 530 正式全量 51.13%（271/530）**；**Effi-SQL 全量评测已完成**（见 `docs/effi300评测报告.md`）；机制见 `docs/架构说明书.md`  
+> **日期**：2026-09-07（Effi 评测收口同步）  
+> **关联**：`docs/pg530评测报告.md`；`docs/effi300评测报告.md`；`docs/架构说明书.md`；`AGENTS.md`
 
 ---
 
@@ -75,5 +75,6 @@ python scripts/run_official_eval.py \
 |----|------|------|
 | Query / Pers | 断言失败 → 机制层优化（少 prompt 注入） | `docs/架构说明书.md` §4.8；`data/pg530_r2_fail_ids.txt` |
 | Management | 相对较高，仍有断言/执行失败 | 同上 |
-| **下一步** | **Effi-SQL 性能评测**（慢 SQL / 效率专项） | submodule `Diff-SQL/`；见 `docs/过程文档.md` §8.2、`docs/环境搭建.md` §5 |
-| 延后 | Open-MySQL 全量 | — |
+| **Effi-SQL** | **全量评测已完成**（match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814） | `docs/effi300评测报告.md`；链路 `docs/评测对接.md` §4 |
+| **后续** | Effi 未 match dig（25 题，尤 tpch） | 同上报告 §3 |
+| 延后 | Open-MySQL 全量；WebUI（P2） | — |
