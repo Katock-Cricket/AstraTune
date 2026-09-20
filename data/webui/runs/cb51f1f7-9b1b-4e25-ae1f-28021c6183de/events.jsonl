@@ -1,0 +1,12 @@
+{"ts": "2026-09-14T09:17:53.970816Z", "name": "started", "payload": {"slot_index": 0}}
+{"ts": "2026-09-14T09:18:01.462040Z", "name": "extract_tables", "payload": {"tables": ["account"]}}
+{"ts": "2026-09-14T09:18:01.915969Z", "name": "sandbox_setup", "payload": {"direct_target": false, "fidelity": "方言=postgresql；槽位库=astratune_sandbox_0\n拷贝阈值=20000；采样上限=20000\npreprocess 已 apply=否/未知\n表清单：\n- account: target_rows=4500 sandbox_rows=4500 mode=全量拷贝(full)\n  统计成功: table_level, index:idx_17818_account_pkey, column_level_best_effort, histogram_mcv_best_effort\n[注意] 采样表上的结果集 Soft EX 可能与生产不一致；统计注入失败时 QEP/cost 不可与生产直接对比。"}}
+{"ts": "2026-09-14T09:18:01.916489Z", "name": "diagnosis", "payload": {"stage": "start"}}
+{"ts": "2026-09-14T09:18:46.118752Z", "name": "diagnosis", "payload": {"stage": "end", "chars": 1045}}
+{"ts": "2026-09-14T09:19:01.247499Z", "name": "intent_spec", "payload": {"summary": {"goal": "query", "output_columns_n": 3, "agg_filters_n": 0, "mgmt_artifacts_n": 1, "pers_need_full_row": false, "empty": false}}}
+{"ts": "2026-09-14T09:19:01.264507Z", "name": "opt_round", "payload": {"stage": "start", "round": 1}}
+{"ts": "2026-09-14T09:21:16.145068Z", "name": "opt_round", "payload": {"stage": "end", "round": 1, "candidates": 5, "passed": true, "failure_reasons": []}}
+{"ts": "2026-09-14T09:21:16.146061Z", "name": "opt_round", "payload": {"stage": "start", "round": 2}}
+{"ts": "2026-09-14T09:21:45.675988Z", "name": "opt_round", "payload": {"stage": "end", "round": 2, "candidates": 5, "passed": true, "failure_reasons": []}}
+{"ts": "2026-09-14T09:21:45.676992Z", "name": "select_final", "payload": {"success": true, "fallback": false, "n_pred": 1}}
+{"ts": "2026-09-14T09:21:45.698427Z", "name": "finished", "payload": {"n_pred": 1}}

@@ -77,4 +77,5 @@ python scripts/run_official_eval.py \
 | Management | 相对较高，仍有断言/执行失败 | 同上 |
 | **Effi-SQL** | **全量评测已完成**（match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814） | `docs/effi300评测报告.md`；链路 `docs/评测对接.md` §4 |
 | **后续** | Effi 未 match dig（25 题，尤 tpch） | 同上报告 §3 |
-| 延后 | Open-MySQL 全量；WebUI（P2） | — |
+| 延后 | Open-MySQL 全量 | — |
+| P2 | WebUI 已实现 | `docs/spec_webui.md`；`python at_webui.py` |

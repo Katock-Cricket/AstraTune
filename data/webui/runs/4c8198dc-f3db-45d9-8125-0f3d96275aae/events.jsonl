@@ -1,0 +1,3 @@
+{"ts": "2026-09-14T09:02:52.931629Z", "name": "started", "payload": {"slot_index": 1}}
+{"ts": "2026-09-14T09:03:10.729673Z", "name": "failed", "payload": {"error": "connection to server at \"127.0.0.1\", port 5433 failed: Connection refused (0x0000274D/10061)\n\tIs the server running on that host and accepting TCP/IP connections?\n"}}
+{"ts": "2026-09-14T09:03:10.731670Z", "name": "failed", "payload": {"error": "connection to server at \"127.0.0.1\", port 5433 failed: Connection refused (0x0000274D/10061)\n\tIs the server running on that host and accepting TCP/IP connections?\n"}}

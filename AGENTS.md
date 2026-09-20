@@ -1,6 +1,6 @@
 # AstraTune — Agent 工作指南
 
-> 供后续 Agent 快速初始化上下文。细节与进度以 `docs/过程文档.md` 为准；机制以 `docs/架构说明书.md` 为准；准确率以 `docs/spec_acc.md` + `docs/pg530评测报告.md` 为准；**Effi 全量评测已完成**：`docs/effi300评测报告.md`（小规模对照 `docs/effi16评测报告.md`）。P0/P1 历史规格已收敛进过程文档与架构说明书（仓库内不再单独维护 `spec_p0.md` / `spec_p1.md`）。
+> 供后续 Agent 快速初始化上下文。细节与进度以 `docs/过程文档.md` 为准；机制以 `docs/架构说明书.md` 为准；准确率以 `docs/spec_acc.md` + `docs/pg530评测报告.md` 为准；**Effi 全量评测已完成**：`docs/effi300评测报告.md`（小规模对照 `docs/effi16评测报告.md`）。**WebUI**：`docs/spec_webui.md`（P2 已实现，`python at_webui.py`）。P0/P1 历史规格已收敛进过程文档与架构说明书（仓库内不再单独维护 `spec_p0.md` / `spec_p1.md`）。
 
 ## 项目是什么
 
@@ -12,7 +12,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 2. **修复多智能体**（Generate–Verify，无 Reflect）— **已完成**
 3. **BIRD-CRITIC 评测跑批** — **PG 530 正式全量 51.13%（271/530）**；Open-MySQL 全量仍延后
 4. **Effi-SQL 性能评测** — **全量正式已完成**（match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814；见 `docs/effi300评测报告.md`）
-5. **WebUI**（单条 SQL：诊断→优化→`pred_sqls`）— **未实现（P2）**
+5. **WebUI**（本地操作台：配置 + 队列 + 阶段轨迹 + 导出 `pred_sqls`）— **已实现（P2）**；`docs/spec_webui.md`
 
 ## 已砍掉 / 冻结（勿再实现）
 
@@ -62,6 +62,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | `utils/inference_runner.py` | **统一单条推理**（`function` × `mode`；infer / 批跑共用） |
 | `utils/effi_adapter.py` | Effi-SQL 题面 ↔ 推理记录 |
 | `scripts/infer.py` | **唯一单条 CLI**（`--function` / `--mode` / `--benchmark effi`） |
+| `at_webui.py` / `webui/` | WebUI（规格 `docs/spec_webui.md`） |
 | `scripts/run_bird_critic.py` | BIRD 批量推理编排（默认 subprocess 隔离） |
 | `scripts/run_effi_sql.py` / `run_effi_worker.py` / `run_effi_eval.py` | Effi 批推理（默认 subprocess）+ Diff-SQL end2end |
 | `scripts/run_bird_worker.py` | 单题子进程 worker |
@@ -75,13 +76,14 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 | `benchmark/` | BIRD-CRITIC 官方评测源码（wrapper / Docker，不含题面与 dumps） |
 | `benchmark_data/` | BIRD + Effi 题面 / dumps（含 Interact scale、TPC-H raw） |
 | `data/eff_subset.jsonl` | 30 条 PG Efficiency 调试子集 |
-| `at_webui.py` | 空，P2 |
+| `at_webui.py` / `webui/` | WebUI 入口与实现（规格 `docs/spec_webui.md`） |
 | `docs/环境搭建.md` | 跨平台启动 |
 | `docs/spec_acc.md` | **准确率规格（PG 530 正式 51.13%）** |
 | `docs/pg530评测报告.md` | **PG 530 官方评测（51.13%）** |
 | `docs/effi300评测报告.md` | **Effi-SQL 全量 300（已完成；match 91.7% / R-VES 0.7642 / Coverage@2x 55.67% / GMS 4.0814）** |
 | `docs/effi16评测报告.md` | Effi-SQL 16 题小规模对照（match 93.8% / R-VES 0.7500） |
 | `docs/架构说明书.md` | **模块实现与机制（权威）** |
+| `docs/spec_webui.md` | **WebUI 实现规格（权威）**；需求原稿 `docs/AstraTune WebUI 需求文档.md` |
 | `docs/评测对接.md` | BIRD merge+wrapper；**Effi §4**；**`--limit` 必读 §2.1** |
 
 ## 全局规则（最高优先级）
@@ -103,7 +105,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 - **准确率**：**PG 530 正式 51.13%（271/530）** — 见 `docs/pg530评测报告.md`；机制见 `docs/架构说明书.md`
 - **Effi-SQL**：**全量评测已完成** — `docs/effi300评测报告.md`（链路 `docs/评测对接.md` §4）；**后续**为未 match dig（25 题）
 - **延后**：Open-MySQL 全量
-- **P2**：WebUI（AstraTune / BIRD evaluation / Diff-SQL **三套 Docker 保持独立**，不合并）
+- **P2**：WebUI **已实现** — `python at_webui.py`（`docs/spec_webui.md`；三套 Docker 保持独立；**不**直连 Effi 评测库）
 
 ## 约定
 
@@ -114,7 +116,7 @@ AstraTune：基于大模型与多智能体协同的数据库慢查询（及更�
 - LLM：`config/agents.json` + **`OPENAI_API_KEY` / `OPENAI_API_KEYS`**（`;` 分隔）；当前 `llm_key_mode=single`，`llm_workers=16`（loader fallback 仍为 `auto`）。批跑沙箱 `--workers` 与 LLM 池独立。默认 `--isolate subprocess`。
 - 单条示例见 `data/测试数据.md`；`--db-id` 可覆盖目标库名。
 - **改规则/纯函数先补特征测试再动手**：`tests/`（`pytest tests/ -q`，无需 DB）；新机制进独立模块（`intent_spec` / `consensus` / `spec_rules` / `eff_risk`），**勿**往 `verify.py` / `prompts.py` 堆 patch；`flash_overfit.py` **冻结新增**
-- 单条推理改动统一改 `utils/inference_runner.py`；CLI（`infer.py` / 批跑 worker）只是薄壳，勿在壳里加逻辑。`diag.py`/`opt.py` 已删除，由 `--mode` 替代。
+- 单条推理改动统一改 `utils/inference_runner.py`；CLI（`infer.py` / 批跑 worker）只是薄壳，勿在壳里加逻辑。`diag.py`/`opt.py` 已删除，由 `--mode` 替代。WebUI 同样只调 `run_single_instance`（`direct_target=False`）；阶段事件用可选 `on_phase`，不改 CLI 语义。禁止写回 `config/*.json`。
 
 ## 环境速查
 
@@ -126,6 +128,8 @@ python infer.py --db-id financial --sql "..." --user-prompt "..." --mode diag+op
 python infer.py --mode opt_only --db-id financial --sql "..." --user-prompt "..."
 python infer.py --mode diag_only --function efficiency --sql "..." --category Efficiency
 python infer.py --benchmark effi --id 1 --function efficiency --mode diag+opt
+python at_webui.py
+# 浏览器 http://127.0.0.1:8080
 ```
 
 PG 530 复现：

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from diagnosis.agent import DiagnosisAgent, extract_involved_tables
 from optimization.graph import run_optimization
@@ -43,6 +43,17 @@ from utils.timing import (
 
 VALID_MODES = ("diag+opt", "diag_only", "opt_only", "llm_only")
 VALID_FUNCTIONS = ("general", "efficiency")
+
+PhaseCallback = Optional[Callable[[str, Dict[str, Any]], None]]
+
+
+def _emit_phase(on_phase: PhaseCallback, name: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    if on_phase is None:
+        return
+    try:
+        on_phase(name, payload or {})
+    except Exception:
+        pass
 
 
 @dataclass
@@ -100,6 +111,7 @@ def run_single_instance(
     logger=None,
     benchmark: Optional[str] = None,
     direct_target: Optional[bool] = None,
+    on_phase: PhaseCallback = None,
 ) -> InferenceResult:
     """跑通一条实例；返回结构化结果，异常吞入 error/meta。
 
@@ -202,6 +214,7 @@ def run_single_instance(
         if not tables:
             raise RuntimeError("未能从 issue_sql/用户问题提取表名")
         result.tables = tables
+        _emit_phase(on_phase, "extract_tables", {"tables": tables})
 
         schema = fetch_schema_ddl(target_ex, tables)
         if original_schema and not schema.strip():
@@ -242,6 +255,14 @@ def run_single_instance(
         fidelity_text = format_fidelity_text(fidelity)
         result.fidelity_text = fidelity_text
         result.sandbox_info = sandbox_info
+        _emit_phase(
+            on_phase,
+            "sandbox_setup",
+            {
+                "direct_target": bool(use_direct),
+                "fidelity": (fidelity_text or "")[:800],
+            },
+        )
 
         # ---- llm_only：跳过诊断与 Verify ----
         if mode == "llm_only":
@@ -264,6 +285,7 @@ def run_single_instance(
         # ---- 诊断 ----
         diagnosis_report = ""
         if mode != "opt_only":
+            _emit_phase(on_phase, "diagnosis", {"stage": "start"})
             tool = SandboxTool(sandbox_ex)
 
             def _on_reset(info: Dict[str, Any]) -> None:
@@ -316,6 +338,12 @@ def run_single_instance(
                 diagnosis_report = ""
                 log.info("opt_only: 无诊断，Generate 仅依题面+schema")
         result.diagnosis_report = diagnosis_report
+        if mode != "opt_only":
+            _emit_phase(
+                on_phase,
+                "diagnosis",
+                {"stage": "end", "chars": len(diagnosis_report or "")},
+            )
 
         intent_spec = extract_intent_spec(
             query=query or "",
@@ -329,6 +357,7 @@ def run_single_instance(
             issue_sql=issue_sql,
         )
         result.meta["intent_spec"] = intent_spec.summary()
+        _emit_phase(on_phase, "intent_spec", {"summary": intent_spec.summary()})
 
         if mode == "diag_only":
             pred, used_fb = extract_pred_sqls_from_diagnosis(
@@ -376,9 +405,19 @@ def run_single_instance(
             reset_fn=reset_fn,
             execute_fn=execute_fn,
             explain_fn=explain_fn,
+            on_phase=on_phase,
         )
 
         result.pred_sqls = list(opt.pred_sqls)
+        _emit_phase(
+            on_phase,
+            "select_final",
+            {
+                "success": bool(opt.success),
+                "fallback": bool(opt.fallback),
+                "n_pred": len(result.pred_sqls),
+            },
+        )
         _finalize_meta_success(
             success=opt.success,
             rounds=opt.rounds,
@@ -394,6 +433,7 @@ def run_single_instance(
             result.pred_sqls = []
         result.error = str(e)
         has_pred = any(str(x).strip() for x in (result.pred_sqls or []))
+        _emit_phase(on_phase, "failed", {"error": str(e)})
         result.meta = {
             "success": False,
             "rounds": 0,

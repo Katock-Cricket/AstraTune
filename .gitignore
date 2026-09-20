@@ -212,3 +212,9 @@ configs/configs.py
 /benchmark_data/dumps/
 /outputs
 *.tbl
+
+# WebUI 运行时（规格 docs/spec_webui.md）
+/data/webui/*.sqlite
+/data/webui/*.sqlite-journal
+/webui/frontend/node_modules/
+/webui/frontend/dist/

@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
+PhaseCallback = Optional[Callable[[str, Dict[str, Any]], None]]
+
+
+def _emit_phase(on_phase: PhaseCallback, name: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    if on_phase is None:
+        return
+    try:
+        on_phase(name, payload or {})
+    except Exception:
+        pass
+
 from langgraph.graph import END, StateGraph
 
 from optimization.consensus import should_block_early_stop
@@ -90,6 +101,7 @@ def create_optimization_graph(
     max_rounds: int = 3,
     verify_agent=None,
     verify_mode: str = "agent+rules",
+    on_phase: PhaseCallback = None,
 ):
     max_rounds = max(1, int(max_rounds))
     mode = (verify_mode or "agent+rules").strip().lower()
@@ -97,6 +109,7 @@ def create_optimization_graph(
     def generate_node(state: OptState) -> Dict[str, Any]:
         rnd = int(state.get("round") or 0) + 1
         default_logger.info(f"[Generate–Verify] Generate round={rnd}")
+        _emit_phase(on_phase, "opt_round", {"stage": "start", "round": rnd})
         try:
             with timed_stage("generate", round=rnd):
                 cands = generate_agent.generate(
@@ -223,6 +236,17 @@ def create_optimization_graph(
                 agent_verdicts=agent_verdicts,
             )
         )
+        _emit_phase(
+            on_phase,
+            "opt_round",
+            {
+                "stage": "end",
+                "round": int(state.get("round") or 0),
+                "candidates": len(cands),
+                "passed": bool(report.passed),
+                "failure_reasons": list(report.failure_reasons or [])[:8],
+            },
+        )
 
         reasons = build_failure_reasons(report)
         if report.passed and report.best:
@@ -280,6 +304,7 @@ def create_optimization_graph(
         report = state.get("verify_report")
         issue_sql = list(state.get("issue_sql") or [])
         round_history = list(state.get("round_history") or [])
+        _emit_phase(on_phase, "select_final", {"stage": "fallback"})
 
         if verify_agent is not None and round_history:
             final_pred = verify_agent.select_final(
@@ -372,6 +397,7 @@ def run_optimization(
     reset_fn: Optional[Callable[[], None]] = None,
     execute_fn: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
     explain_fn: Optional[Callable[[str], Any]] = None,
+    on_phase: PhaseCallback = None,
 ) -> OptimizationResult:
     cfg = opt_config or {}
     max_rounds = int(cfg.get("max_rounds", 3))
@@ -421,6 +447,7 @@ def run_optimization(
         max_rounds=max_rounds,
         verify_agent=verify_agent,
         verify_mode=verify_mode,
+        on_phase=on_phase,
     )
 
     issue_list = _as_sql_list(issue_sql)
