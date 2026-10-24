@@ -154,7 +154,7 @@ python scripts/run_official_eval.py \
 
 本机 Docker Desktop 数据盘在 **D:**，虚拟磁盘路径：
 
-`D:\Docker_wsl\DockerDesktopWSL\disk\docker_data.vhdx`
+`D:\DockerDesktopWSL\disk\docker_data.vhdx`（由 settings-store.json 的 `CustomWslDistroDir` 决定）
 
 **教训**：大批量评测后 vhdx 会虚胖；`docker system df` 可能低估。跑批前建议 D: 保留 **≥30–50GB**。
 
